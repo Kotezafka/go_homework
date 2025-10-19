@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+// Validatable определяет контракт для проверки валидности данных структуры
+type Validatable interface {
+	Validate() error
+}
+
 // Transaction представляет финансовую транзакцию
 type Transaction struct {
 	ID          int
@@ -28,10 +33,33 @@ type Budget struct {
 var transactions []Transaction
 var budgets = make(map[string]Budget)
 
-// AddTransaction добавляет транзакцию в хранилище
+// Validate реализует интерфейс Validatable для Transaction
+func (tx Transaction) Validate() error {
+	if tx.Amount <= 0 {
+		return fmt.Errorf("Сумма транзакции должна быть положительной, получено: %.2f", tx.Amount)
+	}
+	if tx.Category == "" {
+		return fmt.Errorf("Категория транзакции не может быть пустой")
+	}
+	return nil
+}
+
+// Validate реализует интерфейс Validatable для Budget
+func (b Budget) Validate() error {
+	if b.Limit <= 0 {
+		return fmt.Errorf("Лимит бюджета должен быть положительным числом, получено: %.2f", b.Limit)
+	}
+	if b.Category == "" {
+		return fmt.Errorf("Категория бюджета не может быть пустой")
+	}
+	return nil
+}
+
+// AddTransaction добавляет транзакцию в хранилище после валидации
 func AddTransaction(tx Transaction) error {
-	if tx.Amount == 0 {
-		return fmt.Errorf("Сумма транзакции не может быть нулевой")
+	// Валидация перед добавлением
+	if err := tx.Validate(); err != nil {
+		return fmt.Errorf("Невалидная транзакция: %w", err)
 	}
 
 	// Проверяем наличие бюджета для категории
@@ -57,10 +85,15 @@ func ListTransactions() []Transaction {
 	return cpy
 }
 
-// SetBudget добавляет или обновляет бюджет для категории
-func SetBudget(b Budget) {
+// SetBudget добавляет или обновляет бюджет для категории после валидации
+func SetBudget(b Budget) error {
+	if err := b.Validate(); err != nil {
+		return fmt.Errorf("Невалидный бюджет: %w", err)
+	}
+
 	b.Remaining = b.Limit
 	budgets[b.Category] = b
+	return nil
 }
 
 // LoadBudgets читает бюджеты из JSON-потока
@@ -74,7 +107,9 @@ func LoadBudgets(r io.Reader) error {
 	}
 
 	for _, b := range budgetList {
-		SetBudget(b)
+		if err := SetBudget(b); err != nil {
+			return fmt.Errorf("Ошибка при установке бюджета '%s': %w", b.Category, err)
+		}
 	}
 
 	return nil
@@ -84,15 +119,27 @@ func getCurrentPeriod() string {
 	return time.Now().Format("2006-01")
 }
 
+// CheckValid — демонстрационная функция, использующая полиморфизм через интерфейс Validatable
+func CheckValid(v Validatable) error {
+	return v.Validate()
+}
+
 func main() {
 	fmt.Println("Сервис учёта запущен\n")
 
 	currentPeriod := getCurrentPeriod()
 
 	// Инициализация бюджетов через SetBudget с указанием периода
-	SetBudget(Budget{Category: "Food", Limit: 5000.0, Period: currentPeriod})
-	SetBudget(Budget{Category: "Transport", Limit: 2000.0, Period: currentPeriod})
-	SetBudget(Budget{Category: "Entertainment", Limit: 1000.0, Period: currentPeriod})
+	// Убедимся, что они проходят валидацию
+	if err := SetBudget(Budget{Category: "Food", Limit: 5000.0, Period: currentPeriod}); err != nil {
+		fmt.Printf("Ошибка при установке бюджета 'Food': %v\n", err)
+	}
+	if err := SetBudget(Budget{Category: "Transport", Limit: 2000.0, Period: currentPeriod}); err != nil {
+		fmt.Printf("Ошибка при установке бюджета 'Transport': %v\n", err)
+	}
+	if err := SetBudget(Budget{Category: "Entertainment", Limit: 1000.0, Period: currentPeriod}); err != nil {
+		fmt.Printf("Ошибка при установке бюджета 'Entertainment': %v\n", err)
+	}
 
 	// Загрузка бюджетов из файла
 	file, err := os.Open("budgets.json")
@@ -142,6 +189,27 @@ func main() {
 		Category:    "Food",
 		Description: "Кофе и перекусы",
 		Date:        time.Now().Format("2006-01-02"),
+	}
+
+	// Демонстрация полиморфизма через интерфейс Validatable
+	fmt.Println("\nТестирование интерфейса Validatable:")
+	testValidatables := []Validatable{
+		t1,
+		Budget{Category: "Test", Limit: 100.0},
+		t3,
+		Budget{Category: "", Limit: 0},
+		t2,
+		t5,
+	}
+
+	for i, v := range testValidatables {
+		fmt.Printf("Тест %d: ", i+1)
+		err := CheckValid(v)
+		if err != nil {
+			fmt.Printf("❌ Ошибка валидации: %v\n", err)
+		} else {
+			fmt.Printf("✅ Валидно\n")
+		}
 	}
 
 	// Добавляем транзакции и обрабатываем ошибки
