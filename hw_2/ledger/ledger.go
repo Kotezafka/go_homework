@@ -1,4 +1,4 @@
-package main
+package ledger
 
 import (
 	"encoding/json"
@@ -83,6 +83,15 @@ func ListTransactions() []Transaction {
 	cpy := make([]Transaction, len(transactions))
 	copy(cpy, transactions)
 	return cpy
+}
+
+// ListBudgets возвращает копию всех бюджетов
+func Budgets() []Budget {
+	var result []Budget
+	for _, b := range budgets {
+		result = append(result, b)
+	}
+	return result
 }
 
 // SetBudget добавляет или обновляет бюджет для категории после валидации

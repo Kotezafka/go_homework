@@ -98,3 +98,150 @@ __Все задания требуется реализовать в серви�
 4. Модифицируйте функции добавления данных в Ledger: перед добавлением новой транзакции или бюджета, вызывайте метод __Validate()__ для соответствующей структуры. Если метод вернул ошибку, не добавляйте объект и передайте ошибку дальше или логируйте её. Таким образом, вы отделите логику проверки данных от основной бизнес-логики
 
 5. Для демонстрации работы интерфейсов напишите функцию, принимающую параметр типа Validatable (например, __func CheckValid(v Validatable) error__), которая вызывает __v.Validate()__ и возвращает результат. В main протестируйте эту функцию с объектом __Transaction__ и __Budget__, убедившись, что она корректно работает с разными типами (полиморфизм через интерфейс)
+
+
+## Домашнее задание 5
+__В этом задании необходимо работать только в сервисе Gateway. Gateway импортирует модуль ledger из того же репозитория и вызывает его функции / методы. Хранилище — как в ДЗ 2–4 в памяти__
+
+__Практическая рекомендация:__ для корректной работы импорта внутри одного репозитория, в gateway/go.mod укажите require на модуль ledger и добавьте replace на локальный путь. Пример:replace <module_path_ledger> => …/ledgerЛибо используйте go work с go work init ./gateway ./ledger.
+
+1. Создайте в Gateway пакет для HTTP-слоя (например, gateway/internal/api) и опишите в нём структуры:
+- __CreateTransactionRequest__ с полями amount, category, description, date. Эти поля приходят от клиента в JSON при создании транзакции
+- __TransactionResponse__, отражающий публичные поля доменной ledger.Transaction — то, что вы хотите возвращать наружу в JSON
+- __CreateBudgetRequest__ с полями category и limit — данные для создания и обновления бюджета
+- __BudgetResponse__, отражающий публичные поля __ledger.Budget__.
+Добавьте небольшие функции-преобразователи между DTO и доменными моделями, чтобы не смешивать формат HTTP с бизнес-структурами
+
+2. Инициализируйте HTTP-сервер на порту :8080. Это можно сделать на чистом net/http или с лёгким роутером, таким как chi, gorilla или mux.
+Создайте префикс __/api__ и подготовьте маршруты для операций над транзакциями и бюджетами, чтобы далее привязать обработчики.
+
+3. Реализуйте обработчик, который читает JSON-тело запроса в __CreateTransactionRequest__, преобразует его в доменную __ledger.Transaction__ и вызывает __tx.Validate()__ (метод из домашнего задания 4).
+- При ошибке валидации верните статус 400 Bad Request и JSON вида {“error”:“описание ошибки”}. Затем вызовите ledger.AddTransaction(tx)
+- Если вернулась ошибка «превышение бюджета», ответьте 409 Conflict с {“error”:“budget exceeded”}
+- Любые прочие неожиданные ошибки оформляйте как 500 Internal Server Error
+- При успешном добавлении верните 201 Created и TransactionResponse с данными созданной транзакции
+
+4. Реализуйте обработчик, который вызывает __ledger.ListTransactions()__ и возвращает список в виде массива __TransactionResponse__ с кодом 200 OK. Если записей пока нет, верните пустой JSON-массив []
+
+5. Напишите обработчик, читающий __CreateBudgetRequest__, преобразующий его в доменную __ledger.Budget__ и вызывающий __budget.Validate()__.
+- При ошибке валидации верните 400 Bad Request с описанием проблемы
+- При корректных данных вызовите __ledger.SetBudget(b)__ и верните 201 Created вместе с __BudgetResponse__
+
+6. Если в ledger ещё нет функции, добавьте простую __ListBudgets() []Budget__ или верните значения из внутреннего __map__. Обработчик должен вернуть массив __BudgetResponse__ и код 200 OK.
+
+7. Реализуйте функцию-обёртку (middleware) вида __func(next http.Handler) http.Handler__, которая логирует для каждого запроса: HTTP-метод, путь, длительность обработки.
+Подключите её ко всем маршрутам, достаточно консольного лога, внешние библиотеки не требуются.
+
+8. Обеспечьте для всех ответов сервера единый заголовок __Content-Type: application/json; charset=utf-8__. Для ошибок используйте единый формат JSON {“error”:"…"}; обязательно выставляйте подходящий статус:
+- 400 —для валидации
+- 409 —для превышения бюджета
+- 500 —для прочих внутренних ошибок
+
+9. В корневом README.md опишите доступные эндпоинты и приведите короткие примеры cURL для проверки работы API. См. раздел "API Endpoints" ниже
+
+
+## API Endpoints
+Gateway предоставляет следующие HTTP-эндпоинты для работы с транзакциями и бюджетами
+
+
+**GET /ping**
+
+Проверка работоспособности сервера
+
+```bash
+curl http://localhost:8080/ping
+```
+
+Ответ: `pong`
+
+---
+
+### Transactions
+
+#### 1. Создать транзакцию
+**POST /api/transactions** - Создаёт новую финансовую транзакцию
+
+Параметры запроса:
+- `amount` (float64) - сумма транзакции
+- `category` (string) - категория траты
+- `description` (string) - описание
+- `date` (string) - дата транзакции
+
+```bash
+curl -X POST http://localhost:8080/api/transactions \
+  -H "Content-Type: application/json" \
+  -d '{"amount":450,"category":"еда","description":"ланч","date":"2025-09-10"}'
+```
+
+```bash
+curl -X POST http://localhost:8080/api/transactions \
+  -H "Content-Type: application/json" \
+  -d '{"amount":1200,"category":"транспорт","description":"такси до аэропорта","date":"2025-09-11"}'
+```
+
+#### 2. Получить список транзакций
+**GET /api/transactions** - Возвращает все сохранённые транзакции
+
+```bash
+curl http://localhost:8080/api/transactions
+```
+
+---
+
+### Budgets
+
+#### 1. Создать или обновить бюджет
+**POST /api/budgets** - Создаёт новый бюджет для категории или обновляет существующий
+
+Параметры запроса:
+- `category` (string) - категория
+- `limit` (float64) - лимит бюджета
+
+```bash
+curl -X POST http://localhost:8080/api/budgets \
+  -H "Content-Type: application/json" \
+  -d '{"category":"еда","limit":5000}'
+```
+
+```bash
+curl -X POST http://localhost:8080/api/budgets \
+  -H "Content-Type: application/json" \
+  -d '{"category":"транспорт","limit":3000}'
+```
+
+#### 2. Получить список бюджетов
+**GET /api/budgets** - Возвращает все установленные бюджеты
+
+```bash
+curl http://localhost:8080/api/budgets
+```
+
+---
+
+### Коды ответов
+
+- **200 OK** - успешный GET-запрос
+- **201 Created** - успешное создание ресурса
+- **400 Bad Request** - ошибка валидации данных
+- **409 Conflict** - превышение бюджета
+- **500 Internal Server Error** - внутренняя ошибка сервера
+
+### Примеры ошибок
+
+Недостаточно средств в бюджете:
+```bash
+curl -X POST http://localhost:8080/api/transactions \
+  -H "Content-Type: application/json" \
+  -d '{"amount":10000,"category":"еда","description":"обед","date":"2025-09-10"}'
+
+```
+Ответ: {"error":"budget exceeded"}
+
+Ошибка валидации:
+```bash
+curl -X POST http://localhost:8080/api/transactions \
+  -H "Content-Type: application/json" \
+  -d '{"amount":0,"category":"","description":"тест","date":"2025-09-10"}'
+
+```
+Ответ: {"error":"amount must be greater than 0"}
