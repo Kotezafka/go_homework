@@ -133,8 +133,14 @@ func CheckValid(v Validatable) error {
 	return v.Validate()
 }
 
+// Reset очищает внутренние коллекции транзакций и бюджетов (используется в тестах)
+func Reset() {
+	transactions = []Transaction{}
+	budgets = make(map[string]Budget)
+}
+
 func main() {
-	fmt.Println("Сервис учёта запущен\n")
+	fmt.Println("Сервис учёта запущен")
 
 	currentPeriod := getCurrentPeriod()
 
@@ -161,7 +167,8 @@ func main() {
 		if err != nil {
 			fmt.Printf("Error: ошибка при загрузке бюджетов из файла: %v\n\n", err)
 		} else {
-			fmt.Println("Бюджеты успешно загружены из файла budgets.json\n\n")
+			fmt.Println("Бюджеты успешно загружены из файла budgets.json")
+			fmt.Println()
 		}
 	}
 
