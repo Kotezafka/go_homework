@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 	"ledger"
@@ -45,7 +47,7 @@ func handleCreateTransaction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := ledger.AddTransaction(tx); err != nil {
-		if strings.Contains(err.Error(), "Превышен бюджет для категории") {
+		if err.Error() == "budget exceeded" || strings.Contains(err.Error(), "budget exceeded") {
 			errorResponse(w, http.StatusConflict, "budget exceeded")
 			return
 		}
@@ -53,20 +55,18 @@ func handleCreateTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	txs := ledger.ListTransactions()
-	if len(txs) == 0 {
-		errorResponse(w, http.StatusInternalServerError, "Failed to retrieve created transaction")
-		return
-	}
-	createdTx := txs[len(txs)-1]
-
-	resp := api.ToTransactionResponse(createdTx)
+	// Возвращаем созданную транзакцию (ID уже установлен в tx)
+	resp := api.ToTransactionResponse(tx)
 	writeJSON(w, http.StatusCreated, resp)
 }
 
 func handleListTransactions(w http.ResponseWriter, r *http.Request) {
+	txs, err := ledger.ListTransactions()
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Internal server error")
+		return
+	}
 
-	txs := ledger.ListTransactions()
 	var responses []api.TransactionResponse
 	for _, tx := range txs {
 		responses = append(responses, api.ToTransactionResponse(tx))
@@ -100,16 +100,50 @@ func handleCreateBudget(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleListBudgets(w http.ResponseWriter, r *http.Request) {
-	var budgets []api.BudgetResponse
-	for _, b := range ledger.Budgets() {
-		budgets = append(budgets, api.ToBudgetResponse(b))
+	budgets, err := ledger.Budgets()
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Internal server error")
+		return
 	}
 
-	writeJSON(w, http.StatusOK, budgets)
+	var responses []api.BudgetResponse
+	for _, b := range budgets {
+		responses = append(responses, api.ToBudgetResponse(b))
+	}
+
+	writeJSON(w, http.StatusOK, responses)
 }
 
+func handleGetReportSummary(w http.ResponseWriter, r *http.Request) {
+	// Получаем параметры from и to из query string
+	from := r.URL.Query().Get("from")
+	to := r.URL.Query().Get("to")
+
+	if from == "" || to == "" {
+		errorResponse(w, http.StatusBadRequest, "Parameters 'from' and 'to' are required (format: YYYY-MM-DD)")
+		return
+	}
+
+	ctx := context.Background()
+	summary, err := ledger.GetReportSummary(ctx, from, to)
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "Internal server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, summary)
+}
 
 func main() {
+	// Инициализация подключений к БД и Redis
+	if err := ledger.Init(); err != nil {
+		fmt.Fprintf(os.Stderr, "Ошибка инициализации: %v\n", err)
+		os.Exit(1)
+	}
+	defer ledger.Shutdown()
+
+	fmt.Println("Успешно подключено к базе данных и Redis")
+
 	router := http.NewServeMux()
 
 	apiRouter := http.NewServeMux()
@@ -130,6 +164,14 @@ func main() {
 		case http.MethodGet:
 			handleListBudgets(w, r)
 		default:
+			errorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	})
+
+	apiRouter.HandleFunc("/reports/summary", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handleGetReportSummary(w, r)
+		} else {
 			errorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
 	})

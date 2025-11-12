@@ -339,3 +339,118 @@ go tool cover -html=cover.out -o cover.html
 Файлы тестов:
 - `ledger/ledger_test.go` — unit-тесты домена (валидация транзакций и бюджетов, проверка лимитов)
 - `gateway/internal/api/handlers_test.go` — интеграционные HTTP-тесты (API endpoints для транзакций и бюджетов)
+
+
+## Домашнее задание 6
+__В этом задании необходимо работать в сервисах Gateway и Ledger:__
+
+Ledger — основная реализация работы с БД и бизнес-правил
+
+Gateway — проверка API и ручное тестирование через HTTP; код эндпойнтов менять не требуется, контракты остаются теми же.
+
+1. Создайте в проекте каталог для миграций, например ledger/migrations/. Установите утилиту миграций Goose. Добавьте два SQL-файла: up и down. Можете добавить их через команду goose create или вручную. Необходимые таблицы:
+
+Таблица budgets:
+
+- id SERIAL PRIMARY KEY
+- category TEXT UNIQUE NOT NULL
+- limit_amount NUMERIC(14,2) NOT NULL CHECK (limit_amount > 0)
+
+Уникальность по category позволит обновлять бюджет категории без дублей
+
+Таблица expenses:
+
+- id SERIAL PRIMARY KEY
+- amount NUMERIC(14,2) NOT NULL CHECK (amount <> 0)
+- category TEXT NOT NULL
+- description TEXT
+- date DATE NOT NULL
+Индексы можно пропустить на этом этапе; при желании добавьте индекс по (category, date).
+В README.md опишите простой способ применить миграции (через goose … up) и откатить (goose … down).
+
+2. В ledger добавьте инициализацию подключения к базам данных. Например, в main.go или отдельном пакете ledger/internal/db
+- Откройте соединение через sql.Open(“pgx”, dsn) и выполните Ping()
+
+- DSN берите из переменных окружения. Приоритетно используйте переменную DATABASE_URL. Пример: postgres://user:pass@localhost:5432/cashcraft?sslmode=disable). Если DATABASE_URL не задана, соберите DSN из отдельных переменных: DB_HOST, DB_PORT, DB_USER, DB_PASS, DB_NAME. По умолчанию можно использовать localhost:5432, postgres/postgres, бзу данных cashapp, sslmode=disable для локальной разработки
+
+- Для простоты на этом этапе допустимо хранить полученный * sql.DB в доступном для пакета месте, вплоть до глобальной переменной. В теме 8 вы вынесете это в слой репозиториев / DI
+
+- В случае ошибки подключения выводите понятное сообщение и завершайте приложение. Убедитесь, что при успешном старте Ledger логирует факт подключения к базе данных
+
+__Практические рекомендации, когда применять миграции (Goose) и в каком порядке запускать сервисы:__
+- Разверните PostgreSQL локально или в Docker
+- Задайте строку подключения через переменную окружения
+- Примените миграции перед первым запуском Ledger и каждый раз, когда вы меняете схему:goose -dir ./ledger/migrations postgres “$DATABASE_URL” upОткатить: goose -dir ./ledger/migrations postgres “$DATABASE_URL” down
+- Только после успешного goose up запустите Ledger, чтобы он работал уже с актуальной схемой баз данных
+- Затем запустите Gateway и проверьте HTTP-эндпоинты
+
+3. Обновите ранее написанные функции так, чтобы источником данных была база данных:
+__SetBudget(b Budget) error__ — выполнить UPSERT бюджета категории. Пример идеи:INSERT INTO budgets(category, limit_amount ) VALUES($1,$2) ON CONFLICT(category) DO UPDATE SET limit_amount =EXCLUDED.limit_amount
+__ListBudgets() ([]Budget, error)__ — прочитать все строки SELECT category, limit_amount FROM budgets ORDER BY category
+__AddTransaction(tx Transaction) error__ — перед вставкой проверить лимит:
+
+1) Найти бюджет категории: SELECT limit_amount FROM budgets WHERE category=$1. Если бюджета нет, по ТЗ допускается добавление без лимита или возвращается ошибка, если вы так решили ранее — важно быть консистентным
+
+2) Посчитать уже потраченную сумму: SELECT COALESCE(SUM(amount),0) FROM expenses WHERE category=$1
+
+3) Если spent + tx.Amount > limit_amount, возвращать ошибку (например, errors.New(“budget exceeded”)) и не вставлять запись
+
+4) Иначе выполнить INSERT INTO expenses(amount, category, description, date) VALUES($1,$2,$3,$4) RETURNING id; и сохранить сгенерированный id в структуре, если вы возвращаете объект наружу
+- Для простоты можно выполнить шаги 1–4 без транзакции, этого достаточно для учебной задачи
+- ListTransactions() ([]Transaction, error) — прочитать все строки SELECT id, amount, category, description, date FROM expenses ORDER BY date DESC, id DESC.
+Сохраните прежнюю валидацию: перед добавлением обязательно вызывать tx.Validate() и b.Validate()
+
+4. Подключите Redis как ключ-значение кеш с TTL для результатов отчёта и опционально списков бюджетов:
+__Запуск Redis (выберите любой вариант):__
+- Docker: docker run -p 6379:6379 --name cashcraft-redis -d redis:7-alpine
+- локальная установка — по желанию
+
+__Инициализация клиента в Ledger:__
+- добавьте пакет кеша, например ledger/internal/cache или в слое инфраструктуры
+- подключитечерез официальный клиент: github.com/redis/go-redis/v9
+- настройте конфигурацию из env:
+- REDIS_ADDR (по умолчанию localhost:6379)
+- REDIS_DB (по умолчанию 0)
+- REDIS_PASSWORD (опционально)
+- при успешном старте залогируйте подключение
+
+__Кэширование результатов отчёта GetReportSummary(ctx, from, to):__
+- сформируйте ключ, например report:summary:<from>:<to> (даты в формате YYYY-MM-DD);
+- попробуйте прочитать значение из Redis:
+- если нашли, распарсите и верните клиенту (cache hit);
+- если не нашли, посчитайте отчёт через БД (как у вас реализовано сейчас или добавьте простую агрегацию SUM(amount) GROUP BY category для интервала), затем запишите результат в Redis с TTL (например, 30 секунд) и верните клиенту (cache miss → set).
+- настройте сериализацию: удобно хранить целиком JSON (строка) либо []byte — на ваше усмотрение
+
+__(Опционально) Кеш списков бюджетов ListBudgets():__
+- Ключ: budgets:all, TTL 10–30 секунд
+- При SetBudget(…) достаточно короткого TTL. Если хотите, пропишите просто DEL budgets:all после успешной записи
+
+__Важно:__ Gateway менять не требуется — кеш прозрачен; все изменения в Ledger.
+
+5. Не нужно изменять код Gateway из домашнего задания 5, эндпоинты остаются те же
+
+Запустите Ledger, уже подключённый к базе данных
+Запустите Gateway
+Через cURL/Postman выполните:
+- POST /api/budgets с валидными данными — ожидается 201, запись попадает в таблицу budgets
+- POST /api/transactions на сумму в пределах лимита — ожидается 201, запись появляется в expenses
+- POST /api/transactions на сумму, превышающую лимит — ожидается 409 и отсутствие вставки
+- GET /api/transactions / GET /api/budgets — список должен приходить из БД.
+Перезапустите Ledger и убедитесь, что данные сохранились — переживают перезапуск
+
+6. После __sql.Open()__ задайте разумные параметры пула:
+- __db.SetMaxOpenConns(10), db.SetMaxIdleConns(5),__
+- при желании __db.SetConnMaxLifetime(…)__
+
+Это базовая настройка, которая даёт устойчивость к нагрузке и контроль ресурсов, достаточная для учебного проекта
+
+7. Обновите README в двух сервисах, укажите в нём:
+- как создать БД и применить миграции Goose
+- как запустить Ledger с подключением к PostgreSQL и Redis (переменные DATABASE_URL, REDIS_ADDR, REDIS_DB, REDIS_PASSWORD)
+- примеры cURL для проверки, включая GET /api/reports/summary дважды подряд, чтобы увидеть эффект кеша
+- краткое описание того, что теперь Ledger хранит данные в PostgreSQL, а отчёты кэшируются в Redis на короткий TTL
+
+__Чтобы проверить домашнее задание 7, необходимо запустить команду:__
+```
+docker-compose up
+```

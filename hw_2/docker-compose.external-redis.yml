@@ -1,0 +1,12 @@
+services:
+  gateway:
+    environment:
+      REDIS_ADDR: "cashcraft-redis:6379"
+    networks:
+      - cashapp-network
+      - default
+
+networks:
+  default:
+    external: true
+
