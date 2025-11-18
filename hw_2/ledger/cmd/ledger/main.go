@@ -1,26 +1,34 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+
 	"ledger"
 )
 
 func main() {
 	fmt.Println("Сервис учёта запущен")
 
-	// Инициализация подключений к БД и Redis
-	if err := ledger.Init(); err != nil {
+	ctx := context.Background()
+	svc, closeFn, err := ledger.New(ctx)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Ошибка инициализации: %v\n", err)
 		os.Exit(1)
 	}
-	defer ledger.Shutdown()
+	defer func() {
+		if err := closeFn(); err != nil {
+			fmt.Fprintf(os.Stderr, "Ошибка при закрытии ресурсов: %v\n", err)
+		}
+	}()
 
-	fmt.Println("Успешно подключено к базе данных")
-	fmt.Println("Успешно подключено к Redis")
+	// Демонстрация простого использования сервиса (можно заменить на gRPC позднее).
+	if _, err := svc.ListBudgets(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "Ошибка при получении бюджетов: %v\n", err)
+	}
+
 	fmt.Println("Ledger сервис готов к работе. Ожидание запросов от Gateway...")
-
-	// Держим сервис запущенным
-	select {} // Блокируем выполнение, чтобы сервис не завершился
+	select {}
 }
 

@@ -10,45 +10,65 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Client глобальная переменная для хранения клиента Redis
-var Client *redis.Client
+// Client описывает минимальные операции кеша, необходимые сервису.
+type Client interface {
+	Get(ctx context.Context, key string) (string, error)
+	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
+	Delete(ctx context.Context, keys ...string) error
+	Flush(ctx context.Context) error
+	Close() error
+}
 
-// InitCache инициализирует подключение к Redis
-func InitCache() error {
+type redisClient struct {
+	client *redis.Client
+}
+
+// New создаёт подключение к Redis и выполняет ping.
+func New(ctx context.Context) (Client, error) {
 	addr := getEnvOrDefault("REDIS_ADDR", "localhost:6379")
 	db, _ := strconv.Atoi(getEnvOrDefault("REDIS_DB", "0"))
 	password := os.Getenv("REDIS_PASSWORD")
 
-	Client = redis.NewClient(&redis.Options{
+	instance := redis.NewClient(&redis.Options{
 		Addr:     addr,
 		DB:       db,
 		Password: password,
 	})
 
-	// Проверяем подключение
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	if err := Client.Ping(ctx).Err(); err != nil {
-		return fmt.Errorf("не удалось подключиться к Redis: %w", err)
+	if err := instance.Ping(pingCtx).Err(); err != nil {
+		return nil, fmt.Errorf("не удалось подключиться к Redis: %w", err)
 	}
 
-	return nil
+	return &redisClient{client: instance}, nil
 }
 
-// getEnvOrDefault возвращает значение переменной окружения или значение по умолчанию
+func (c *redisClient) Get(ctx context.Context, key string) (string, error) {
+	return c.client.Get(ctx, key).Result()
+}
+
+func (c *redisClient) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	return c.client.Set(ctx, key, value, ttl).Err()
+}
+
+func (c *redisClient) Delete(ctx context.Context, keys ...string) error {
+	return c.client.Del(ctx, keys...).Err()
+}
+
+func (c *redisClient) Flush(ctx context.Context) error {
+	return c.client.FlushDB(ctx).Err()
+}
+
+func (c *redisClient) Close() error {
+	return c.client.Close()
+}
+
 func getEnvOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
 	}
 	return defaultValue
-}
-
-// Close закрывает соединение с Redis
-func Close() error {
-	if Client != nil {
-		return Client.Close()
-	}
-	return nil
 }
 

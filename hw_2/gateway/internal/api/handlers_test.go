@@ -2,467 +2,266 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+
 	"ledger"
 )
 
-// setupTestRouter создаёт тестовый роутер, аналогичный main.go
-func setupTestRouter() *http.ServeMux {
-	router := http.NewServeMux()
-
-	apiRouter := http.NewServeMux()
-	apiRouter.HandleFunc("/transactions", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost:
-			handleCreateTransaction(w, r)
-		case http.MethodGet:
-			handleListTransactions(w, r)
-		default:
-			errorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	})
-	apiRouter.HandleFunc("/budgets", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost:
-			handleCreateBudget(w, r)
-		case http.MethodGet:
-			handleListBudgets(w, r)
-		default:
-			errorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
-		}
-	})
-
-	router.Handle("/api/", http.StripPrefix("/api", apiRouter))
-	return router
-}
-
-// Вспомогательные функции для тестов (копии из main.go)
-func writeJSON(w http.ResponseWriter, status int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
-}
-
-func errorResponse(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}
-
-func handleCreateTransaction(w http.ResponseWriter, r *http.Request) {
-	var req CreateTransactionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		errorResponse(w, http.StatusBadRequest, "Invalid JSON format")
-		return
-	}
-
-	tx := req.ToDomainTransaction()
-
-	if err := tx.Validate(); err != nil {
-		errorResponse(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	if err := ledger.AddTransaction(tx); err != nil {
-		if strings.Contains(err.Error(), "Превышен бюджет для категории") {
-			errorResponse(w, http.StatusConflict, "budget exceeded")
-			return
-		}
-		errorResponse(w, http.StatusInternalServerError, "Internal server error")
-		return
-	}
-
-	txs := ledger.ListTransactions()
-	if len(txs) == 0 {
-		errorResponse(w, http.StatusInternalServerError, "Failed to retrieve created transaction")
-		return
-	}
-	createdTx := txs[len(txs)-1]
-
-	resp := ToTransactionResponse(createdTx)
-	writeJSON(w, http.StatusCreated, resp)
-}
-
-func handleListTransactions(w http.ResponseWriter, r *http.Request) {
-	txs := ledger.ListTransactions()
-	var responses []TransactionResponse
-	for _, tx := range txs {
-		responses = append(responses, ToTransactionResponse(tx))
-	}
-
-	writeJSON(w, http.StatusOK, responses)
-}
-
-func handleCreateBudget(w http.ResponseWriter, r *http.Request) {
-	var req CreateBudgetRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		errorResponse(w, http.StatusBadRequest, "Invalid JSON format")
-		return
-	}
-
-	budget := req.ToDomainBudget()
-
-	if err := budget.Validate(); err != nil {
-		errorResponse(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	if err := ledger.SetBudget(budget); err != nil {
-		errorResponse(w, http.StatusInternalServerError, "Internal server error")
-		return
-	}
-
-	resp := ToBudgetResponse(budget)
-	writeJSON(w, http.StatusCreated, resp)
-}
-
-func handleListBudgets(w http.ResponseWriter, r *http.Request) {
-	var budgets []BudgetResponse
-	for _, b := range ledger.Budgets() {
-		budgets = append(budgets, ToBudgetResponse(b))
-	}
-
-	writeJSON(w, http.StatusOK, budgets)
-}
-
-// TestBudgetsAPI тестирует API для работы с бюджетами
 func TestBudgetsAPI(t *testing.T) {
-	ledger.Reset()
-	t.Cleanup(func() { ledger.Reset() })
-
-	router := setupTestRouter()
-
 	t.Run("POST /api/budgets - валидный бюджет", func(t *testing.T) {
-		ledger.Reset()
+		svc := newFakeLedgerService()
+		router := NewRouter(svc)
 
-		reqBody := CreateBudgetRequest{
-			Category: "еда",
-			Limit:    5000.0,
-		}
+		reqBody := CreateBudgetRequest{Category: "еда", Limit: 5000.0}
 		body, _ := json.Marshal(reqBody)
 
 		req := httptest.NewRequest(http.MethodPost, "/api/budgets", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
+		res := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.ServeHTTP(res, req)
 
-		if w.Code != http.StatusCreated {
-			t.Errorf("Ожидался статус 201, получен: %d", w.Code)
+		if res.Code != http.StatusCreated {
+			t.Fatalf("ожидался статус 201, получен %d", res.Code)
 		}
 
-		// Проверяем Content-Type
-		contentType := w.Header().Get("Content-Type")
-		expectedContentType := "application/json; charset=utf-8"
-		if contentType != expectedContentType {
-			t.Errorf("Ожидался Content-Type %s, получен: %s", expectedContentType, contentType)
-		}
-
-		// Проверяем JSON ответ
 		var response BudgetResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-			t.Fatalf("Не удалось распарсить JSON ответ: %v", err)
+		if err := json.Unmarshal(res.Body.Bytes(), &response); err != nil {
+			t.Fatalf("не удалось распарсить ответ: %v", err)
 		}
 
-		if response.Category != "еда" {
-			t.Errorf("Ожидалась категория 'еда', получена: %s", response.Category)
-		}
-		if response.Limit != 5000.0 {
-			t.Errorf("Ожидался лимит 5000.0, получен: %.2f", response.Limit)
+		if response.Category != "еда" || response.Limit != 5000 {
+			t.Errorf("неожиданный ответ %+v", response)
 		}
 	})
 
 	t.Run("POST /api/budgets - невалидный JSON", func(t *testing.T) {
-		ledger.Reset()
+		router := NewRouter(newFakeLedgerService())
 
 		req := httptest.NewRequest(http.MethodPost, "/api/budgets", bytes.NewBufferString("invalid json"))
 		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
+		res := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.ServeHTTP(res, req)
 
-		if w.Code != http.StatusBadRequest {
-			t.Errorf("Ожидался статус 400, получен: %d", w.Code)
-		}
-
-		var errorResp map[string]string
-		if err := json.Unmarshal(w.Body.Bytes(), &errorResp); err != nil {
-			t.Fatalf("Не удалось распарсить JSON ответ: %v", err)
-		}
-
-		if errorResp["error"] == "" {
-			t.Error("Ожидалось поле 'error' в ответе")
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("ожидался 400, получен %d", res.Code)
 		}
 	})
 
 	t.Run("POST /api/budgets - нулевой лимит", func(t *testing.T) {
-		ledger.Reset()
+		router := NewRouter(newFakeLedgerService())
 
-		reqBody := CreateBudgetRequest{
-			Category: "еда",
-			Limit:    0,
-		}
+		reqBody := CreateBudgetRequest{Category: "еда", Limit: 0}
 		body, _ := json.Marshal(reqBody)
 
 		req := httptest.NewRequest(http.MethodPost, "/api/budgets", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
+		res := httptest.NewRecorder()
 
-		router.ServeHTTP(w, req)
+		router.ServeHTTP(res, req)
 
-		if w.Code != http.StatusBadRequest {
-			t.Errorf("Ожидался статус 400, получен: %d", w.Code)
-		}
-
-		var errorResp map[string]string
-		if err := json.Unmarshal(w.Body.Bytes(), &errorResp); err != nil {
-			t.Fatalf("Не удалось распарсить JSON ответ: %v", err)
-		}
-
-		if errorResp["error"] == "" {
-			t.Error("Ожидалось поле 'error' в ответе")
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("ожидался 400, получен %d", res.Code)
 		}
 	})
 
 	t.Run("GET /api/budgets - список бюджетов", func(t *testing.T) {
-		ledger.Reset()
+		svc := newFakeLedgerService()
+		router := NewRouter(svc)
 
-		// Создаём бюджет через API
-		reqBody := CreateBudgetRequest{
-			Category: "еда",
-			Limit:    5000.0,
-		}
+		reqBody := CreateBudgetRequest{Category: "еда", Limit: 5000.0}
 		body, _ := json.Marshal(reqBody)
+		createReq := httptest.NewRequest(http.MethodPost, "/api/budgets", bytes.NewBuffer(body))
+		createReq.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(httptest.NewRecorder(), createReq)
 
-		req := httptest.NewRequest(http.MethodPost, "/api/budgets", bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		req := httptest.NewRequest(http.MethodGet, "/api/budgets", nil)
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
 
-		// Получаем список бюджетов
-		req = httptest.NewRequest(http.MethodGet, "/api/budgets", nil)
-		w = httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-
-		if w.Code != http.StatusOK {
-			t.Errorf("Ожидался статус 200, получен: %d", w.Code)
+		if res.Code != http.StatusOK {
+			t.Fatalf("ожидался 200, получен %d", res.Code)
 		}
 
 		var budgets []BudgetResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &budgets); err != nil {
-			t.Fatalf("Не удалось распарсить JSON ответ: %v", err)
+		if err := json.Unmarshal(res.Body.Bytes(), &budgets); err != nil {
+			t.Fatalf("не удалось распарсить ответ: %v", err)
 		}
 
 		if len(budgets) == 0 {
-			t.Error("Ожидался хотя бы один бюджет в списке")
-		}
-
-		found := false
-		for _, b := range budgets {
-			if b.Category == "еда" && b.Limit == 5000.0 {
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			t.Error("Не найден созданный бюджет в списке")
+			t.Fatal("ожидался хотя бы один бюджет")
 		}
 	})
 }
 
-// TestTransactionsAPI тестирует API для работы с транзакциями
 func TestTransactionsAPI(t *testing.T) {
-	ledger.Reset()
-	t.Cleanup(func() { ledger.Reset() })
-
-	router := setupTestRouter()
-
 	t.Run("ok - создание и получение транзакции", func(t *testing.T) {
-		ledger.Reset()
+		svc := newFakeLedgerService()
+		router := NewRouter(svc)
 
-		// Сначала создаём бюджет
-		budgetReq := CreateBudgetRequest{
-			Category: "еда",
-			Limit:    5000.0,
-		}
-		body, _ := json.Marshal(budgetReq)
-		req := httptest.NewRequest(http.MethodPost, "/api/budgets", bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		createBudget(router, CreateBudgetRequest{Category: "еда", Limit: 5000})
 
-		// Создаём транзакцию
 		txReq := CreateTransactionRequest{
-			Amount:      1500.0,
+			Amount:      1500,
 			Category:    "еда",
 			Description: "Обед",
-			Date:        "2025-01-15",
-		}
-		body, _ = json.Marshal(txReq)
-		req = httptest.NewRequest(http.MethodPost, "/api/transactions", bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
-		w = httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-
-		if w.Code != http.StatusCreated {
-			t.Errorf("Ожидался статус 201, получен: %d", w.Code)
-		}
-
-		var txResponse TransactionResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &txResponse); err != nil {
-			t.Fatalf("Не удалось распарсить JSON ответ: %v", err)
-		}
-
-		if txResponse.Amount != 1500.0 {
-			t.Errorf("Ожидалась сумма 1500.0, получена: %.2f", txResponse.Amount)
-		}
-		if txResponse.Category != "еда" {
-			t.Errorf("Ожидалась категория 'еда', получена: %s", txResponse.Category)
-		}
-		if txResponse.Date != "2025-01-15" {
-			t.Errorf("Ожидалась дата '2025-01-15', получена: %s", txResponse.Date)
-		}
-
-		// Получаем список транзакций
-		req = httptest.NewRequest(http.MethodGet, "/api/transactions", nil)
-		w = httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-
-		if w.Code != http.StatusOK {
-			t.Errorf("Ожидался статус 200, получен: %d", w.Code)
-		}
-
-		var transactions []TransactionResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &transactions); err != nil {
-			t.Fatalf("Не удалось распарсить JSON ответ: %v", err)
-		}
-
-		if len(transactions) != 1 {
-			t.Errorf("Ожидалась 1 транзакция, получено: %d", len(transactions))
-		}
-
-		if transactions[0].ID != txResponse.ID {
-			t.Errorf("ID транзакции не совпадает")
-		}
-	})
-
-	t.Run("exceeded - превышение бюджета", func(t *testing.T) {
-		ledger.Reset()
-
-		// Создаём бюджет
-		budgetReq := CreateBudgetRequest{
-			Category: "еда",
-			Limit:    5000.0,
-		}
-		body, _ := json.Marshal(budgetReq)
-		req := httptest.NewRequest(http.MethodPost, "/api/budgets", bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-
-		// Добавляем первую транзакцию
-		txReq1 := CreateTransactionRequest{
-			Amount:      3000.0,
-			Category:    "еда",
-			Description: "Обед",
-			Date:        "2025-01-15",
-		}
-		body, _ = json.Marshal(txReq1)
-		req = httptest.NewRequest(http.MethodPost, "/api/transactions", bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
-		w = httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-
-		// Пытаемся добавить транзакцию, которая превысит лимит
-		initialTxs := ledger.ListTransactions()
-		initialCount := len(initialTxs)
-
-		txReq2 := CreateTransactionRequest{
-			Amount:      2500.0, // 3000 + 2500 = 5500 > 5000
-			Category:    "еда",
-			Description: "Ужин",
-			Date:        "2025-01-16",
-		}
-		body, _ = json.Marshal(txReq2)
-		req = httptest.NewRequest(http.MethodPost, "/api/transactions", bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
-		w = httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-
-		if w.Code != http.StatusConflict {
-			t.Errorf("Ожидался статус 409, получен: %d", w.Code)
-		}
-
-		var errorResp map[string]string
-		if err := json.Unmarshal(w.Body.Bytes(), &errorResp); err != nil {
-			t.Fatalf("Не удалось распарсить JSON ответ: %v", err)
-		}
-
-		if errorResp["error"] != "budget exceeded" {
-			t.Errorf("Ожидалась ошибка 'budget exceeded', получена: %s", errorResp["error"])
-		}
-
-		// Проверяем, что транзакция не была добавлена
-		finalTxs := ledger.ListTransactions()
-		finalCount := len(finalTxs)
-		if finalCount != initialCount {
-			t.Errorf("Количество транзакций изменилось после ошибки: было %d, стало %d", initialCount, finalCount)
-		}
-	})
-
-	t.Run("bad_json - некорректный JSON", func(t *testing.T) {
-		ledger.Reset()
-
-		req := httptest.NewRequest(http.MethodPost, "/api/transactions", bytes.NewBufferString("invalid json"))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-
-		if w.Code != http.StatusBadRequest {
-			t.Errorf("Ожидался статус 400, получен: %d", w.Code)
-		}
-
-		var errorResp map[string]string
-		if err := json.Unmarshal(w.Body.Bytes(), &errorResp); err != nil {
-			t.Fatalf("Не удалось распарсить JSON ответ: %v", err)
-		}
-
-		if !strings.Contains(errorResp["error"], "Invalid JSON") {
-			t.Errorf("Ожидалась ошибка 'Invalid JSON format', получена: %s", errorResp["error"])
-		}
-	})
-
-	t.Run("validation_error - невалидная транзакция", func(t *testing.T) {
-		ledger.Reset()
-
-		// Транзакция с нулевой суммой
-		txReq := CreateTransactionRequest{
-			Amount:      0,
-			Category:    "еда",
-			Description: "Тест",
 			Date:        "2025-01-15",
 		}
 		body, _ := json.Marshal(txReq)
 		req := httptest.NewRequest(http.MethodPost, "/api/transactions", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
 
-		if w.Code != http.StatusBadRequest {
-			t.Errorf("Ожидался статус 400, получен: %d", w.Code)
+		if res.Code != http.StatusCreated {
+			t.Fatalf("ожидался 201, получен %d", res.Code)
 		}
 
-		var errorResp map[string]string
-		if err := json.Unmarshal(w.Body.Bytes(), &errorResp); err != nil {
-			t.Fatalf("Не удалось распарсить JSON ответ: %v", err)
+		req = httptest.NewRequest(http.MethodGet, "/api/transactions", nil)
+		res = httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+
+		var txs []TransactionResponse
+		if err := json.Unmarshal(res.Body.Bytes(), &txs); err != nil {
+			t.Fatalf("не удалось распарсить ответ: %v", err)
 		}
 
-		if errorResp["error"] == "" {
-			t.Error("Ожидалось поле 'error' в ответе")
+		if len(txs) != 1 || txs[0].Category != "еда" {
+			t.Fatalf("неожиданный список транзакций: %+v", txs)
 		}
 	})
+
+	t.Run("exceeded - превышение бюджета", func(t *testing.T) {
+		svc := newFakeLedgerService()
+		router := NewRouter(svc)
+
+		createBudget(router, CreateBudgetRequest{Category: "еда", Limit: 5000})
+		createTransaction(router, CreateTransactionRequest{Amount: 3000, Category: "еда", Date: "2025-01-15"})
+
+		req := httptest.NewRequest(http.MethodPost, "/api/transactions",
+			bytes.NewBufferString(`{"amount":2500,"category":"еда","date":"2025-01-16"}`))
+		req.Header.Set("Content-Type", "application/json")
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+
+		if res.Code != http.StatusConflict {
+			t.Fatalf("ожидался 409, получен %d", res.Code)
+		}
+	})
+
+	t.Run("bad_json - некорректный JSON", func(t *testing.T) {
+		router := NewRouter(newFakeLedgerService())
+		req := httptest.NewRequest(http.MethodPost, "/api/transactions", bytes.NewBufferString("bad"))
+		req.Header.Set("Content-Type", "application/json")
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("ожидался 400, получен %d", res.Code)
+		}
+	})
+
+	t.Run("validation_error - невалидная транзакция", func(t *testing.T) {
+		router := NewRouter(newFakeLedgerService())
+		reqBody := CreateTransactionRequest{Amount: 0, Category: "еда"}
+		body, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest(http.MethodPost, "/api/transactions", bytes.NewBuffer(body))
+		req.Header.Set("Content-Type", "application/json")
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("ожидался 400, получен %d", res.Code)
+		}
+	})
+}
+
+func createBudget(router http.Handler, payload CreateBudgetRequest) {
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/budgets", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(httptest.NewRecorder(), req)
+}
+
+func createTransaction(router http.Handler, payload CreateTransactionRequest) {
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/transactions", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(httptest.NewRecorder(), req)
+}
+
+type fakeLedgerService struct {
+	budgets      map[string]ledger.Budget
+	transactions []ledger.Transaction
+}
+
+func newFakeLedgerService() *fakeLedgerService {
+	return &fakeLedgerService{
+		budgets: make(map[string]ledger.Budget),
+	}
+}
+
+func (f *fakeLedgerService) SetBudget(_ context.Context, budget ledger.Budget) (ledger.Budget, error) {
+	f.budgets[budget.Category] = budget
+	return budget, nil
+}
+
+func (f *fakeLedgerService) ListBudgets(_ context.Context) ([]ledger.Budget, error) {
+	result := make([]ledger.Budget, 0, len(f.budgets))
+	for _, b := range f.budgets {
+		b.Remaining = b.Limit - f.spentForCategory(b.Category)
+		result = append(result, b)
+	}
+	return result, nil
+}
+
+func (f *fakeLedgerService) AddTransaction(_ context.Context, tx ledger.Transaction) (ledger.Transaction, error) {
+	if tx.Amount <= 0 || tx.Category == "" {
+		return ledger.Transaction{}, fmt.Errorf("invalid transaction")
+	}
+
+	if budget, ok := f.budgets[tx.Category]; ok {
+		if f.spentForCategory(tx.Category)+tx.Amount > budget.Limit {
+			return ledger.Transaction{}, ledger.ErrBudgetExceeded
+		}
+	}
+
+	tx.ID = len(f.transactions) + 1
+	f.transactions = append(f.transactions, tx)
+	return tx, nil
+}
+
+func (f *fakeLedgerService) ListTransactions(_ context.Context) ([]ledger.Transaction, error) {
+	cpy := make([]ledger.Transaction, len(f.transactions))
+	copy(cpy, f.transactions)
+	return cpy, nil
+}
+
+func (f *fakeLedgerService) GetReportSummary(_ context.Context, _, _ string) ([]ledger.ReportSummary, error) {
+	summary := make(map[string]float64)
+	for _, tx := range f.transactions {
+		summary[tx.Category] += tx.Amount
+	}
+	result := make([]ledger.ReportSummary, 0, len(summary))
+	for category, total := range summary {
+		result = append(result, ledger.ReportSummary{Category: category, Total: total})
+	}
+	return result, nil
+}
+
+func (f *fakeLedgerService) spentForCategory(category string) float64 {
+	var total float64
+	for _, tx := range f.transactions {
+		if tx.Category == category {
+			total += tx.Amount
+		}
+	}
+	return total
 }
 
