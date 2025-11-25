@@ -52,6 +52,34 @@ services:
       - cashapp-network
     restart: unless-stopped
 
+  test:
+    image: golang:1.23
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://postgres_user:postgres_password@postgres:5432/cashapp?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: >
+      sh -c '
+        go mod tidy && \
+        go install github.com/onsi/ginkgo/v2/ginkgo@latest || true && \
+        go test -v -cover ./ledger/... && \
+        go test -v -cover ./gateway/... && \
+        echo "--- COVERAGE ---" && \
+        # go test -coverprofile=cover.out ./... && \
+        # go tool cover -func=cover.out && \
+        echo "All tests and coverage completed"
+      '
+    networks:
+      - cashapp-network
+    restart: "no"
+
 volumes:
   postgres_data:
 

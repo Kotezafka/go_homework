@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"ledger"
@@ -46,7 +48,7 @@ func NewRouter(svc ledger.Service) http.Handler {
 	})
 
 	rootMux := http.NewServeMux()
-	rootMux.Handle("/api/", http.StripPrefix("/api", loggingMiddleware(apiMux)))
+	rootMux.Handle("/api/", timeoutMiddleware(2*time.Second, loggingMiddleware(http.StripPrefix("/api", apiMux))))
 	rootMux.HandleFunc("/ping", handlePing)
 
 	return rootMux
@@ -145,6 +147,10 @@ func (h handler) handleGetReportSummary(w http.ResponseWriter, r *http.Request) 
 
 	summary, err := h.svc.GetReportSummary(r.Context(), from, to)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			errorResponse(w, 504, "request timeout or cancelled")
+			return
+		}
 		errorResponse(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
@@ -166,6 +172,44 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		fmt.Printf("[LOG] %s %s took %v\n", r.Method, r.URL.Path, time.Since(start))
+	})
+}
+
+type respWrapper struct {
+	http.ResponseWriter
+	wroteHeader atomic.Bool
+}
+func (rw *respWrapper) WriteHeader(code int) {
+	if rw.wroteHeader.CompareAndSwap(false, true) {
+		rw.ResponseWriter.WriteHeader(code)
+	}
+}
+func (rw *respWrapper) Write(b []byte) (int, error) {
+	rw.wroteHeader.CompareAndSwap(false, true)
+	return rw.ResponseWriter.Write(b)
+}
+
+
+func timeoutMiddleware(timeout time.Duration, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		resp := &respWrapper{ResponseWriter: w}
+		done := make(chan struct{})
+		reqWithCtx := r.WithContext(ctx)
+
+		go func() {
+			next.ServeHTTP(resp, reqWithCtx)
+			close(done)
+		}()
+
+		select {
+		case <-ctx.Done():
+			if !resp.wroteHeader.Load() {
+				errorResponse(resp, 504, "request timeout or cancelled")
+			}
+		case <-done:
+		}
 	})
 }
 

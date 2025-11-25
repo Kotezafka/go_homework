@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"sync"
 	"time"
 
 	"ledger/internal/cache"
@@ -128,16 +131,72 @@ func (s *ledgerService) GetReportSummary(ctx context.Context, from, to string) (
 		return nil, errors.New("from and to must be provided")
 	}
 
-	if summary, ok, err := s.loadReportFromCache(ctx, from, to); err == nil && ok {
-		return summary, nil
-	}
-
-	summary, err := s.expenses.Summary(ctx, from, to)
+	// Конкурентное вычисление отчёта по категориям за период
+	categories, err := s.getCategoriesForPeriod(ctx, from, to)
 	if err != nil {
-		return nil, fmt.Errorf("report summary: %w", err)
+		return nil, fmt.Errorf("get categories: %w", err)
 	}
 
-	s.saveReportToCache(ctx, from, to, summary)
+	var (
+		mu      sync.Mutex
+		wg      sync.WaitGroup
+		result  = make(map[string]float64)
+		errOnce sync.Once
+		calcErr error
+	)
+
+	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
+	defer heartbeatCancel()
+	go func() {
+		ticker := time.NewTicker(400 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+				log.Println("[report] concurrent summary calculation in progress...")
+			}
+		}
+	}()
+
+	wg.Add(len(categories))
+	for _, cat := range categories {
+		cat := cat // локальная копия
+		go func() {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				return // ранний выход по отмене
+			default:
+			}
+			// расчет суммы по категории (за период)
+			var total float64
+			row := s.expensesDB().QueryRowContext(ctx, "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE category = $1 AND date >= $2 AND date <= $3", cat, from, to)
+			if err := row.Scan(&total); err != nil {
+				errOnce.Do(func() { calcErr = fmt.Errorf("scan sum for %s: %w", cat, err) })
+				return
+			}
+			mu.Lock()
+			result[cat] = total
+			mu.Unlock()
+		}()
+	}
+
+	wg.Wait()
+	heartbeatCancel()
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if calcErr != nil {
+		return nil, calcErr
+	}
+	// преобразуем map в []ReportSummary/или map для отдачи в gateway (тут массив для совместимости)
+	summary := make([]domain.ReportSummary, 0, len(result))
+	for k, v := range result {
+		summary = append(summary, domain.ReportSummary{Category: k, Total: v})
+	}
 	return summary, nil
 }
 
@@ -237,5 +296,41 @@ func (s *ledgerService) saveReportToCache(ctx context.Context, from, to string, 
 
 func reportCacheKey(from, to string) string {
 	return fmt.Sprintf("report:summary:%s:%s", from, to)
+}
+
+
+func (s *ledgerService) getCategoriesForPeriod(ctx context.Context, from, to string) ([]string, error) {
+	cats := map[string]struct{}{}
+
+	budgets, _ := s.budgets.List(ctx)
+	for _, b := range budgets {
+		cats[b.Category] = struct{}{}
+	}
+
+	const q = "SELECT DISTINCT category FROM expenses WHERE date >= $1 AND date <= $2"
+	rows, err := s.expensesDB().QueryContext(ctx, q, from, to)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var c string
+			if err := rows.Scan(&c); err == nil {
+				cats[c] = struct{}{}
+			}
+		}
+	}
+	list := make([]string, 0, len(cats))
+	for cat := range cats {
+		list = append(list, cat)
+	}
+	return list, nil
+}
+
+
+func (s *ledgerService) expensesDB() *sql.DB {
+	type dbGetter interface{ DB() *sql.DB }
+	if exp, ok := s.expenses.(dbGetter); ok {
+		return exp.DB()
+	}
+	return nil
 }
 

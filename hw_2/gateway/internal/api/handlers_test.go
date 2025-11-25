@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"ledger"
 )
@@ -182,6 +183,59 @@ func TestTransactionsAPI(t *testing.T) {
 	})
 }
 
+func TestReportSummaryAPI(t *testing.T) {
+	t.Run("успех /api/reports/summary", func(t *testing.T) {
+		svc := newFakeLedgerService()
+		router := NewRouter(svc)
+		createBudget(router, CreateBudgetRequest{Category: "еда", Limit: 5000})
+		createTransaction(router, CreateTransactionRequest{Amount: 1500, Category: "еда", Description: "Обед", Date: "2025-01-15"})
+		createBudget(router, CreateBudgetRequest{Category: "транспорт", Limit: 3000})
+		createTransaction(router, CreateTransactionRequest{Amount: 700, Category: "транспорт", Description: "поездка", Date: "2025-01-18"})
+
+		req := httptest.NewRequest(http.MethodGet, "/api/reports/summary?from=2025-01-10&to=2025-01-20", nil)
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+
+		if res.Code != http.StatusOK {
+			t.Fatalf("ожидался статус 200, получен %d", res.Code)
+		}
+		var got []ledger.ReportSummary
+		if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+			t.Fatalf("bad json: %v", err)
+		}
+		m := map[string]float64{}
+		for _, item := range got {
+			m[item.Category] = item.Total
+		}
+		if m["еда"] != 1500 || m["транспорт"] != 700 {
+			t.Errorf("unexpected summary: %+v", m)
+		}
+	})
+
+	t.Run("ошибка параметров (нет from)", func(t *testing.T) {
+		router := NewRouter(newFakeLedgerService())
+		req := httptest.NewRequest(http.MethodGet, "/api/reports/summary?to=2025-01-10", nil)
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("ожидался статус 400, получен %d", res.Code)
+		}
+	})
+
+	t.Run("таймаут /api/reports/summary", func(t *testing.T) {
+		svc := verySlowLedgerService(80 * time.Millisecond)
+		router := NewTestRouterWithTimeout(svc, 50*time.Millisecond)
+		createBudget(router, CreateBudgetRequest{Category: "еда", Limit: 5000})
+		createTransaction(router, CreateTransactionRequest{Amount: 1500, Category: "еда", Description: "Обед", Date: "2025-01-15"})
+		req := httptest.NewRequest(http.MethodGet, "/api/reports/summary?from=2025-01-10&to=2025-01-22", nil)
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+		if res.Code != 504 {
+			t.Fatalf("ожидался статус 504, получен %d", res.Code)
+		}
+	})
+}
+
 func createBudget(router http.Handler, payload CreateBudgetRequest) {
 	body, _ := json.Marshal(payload)
 	req := httptest.NewRequest(http.MethodPost, "/api/budgets", bytes.NewBuffer(body))
@@ -263,5 +317,38 @@ func (f *fakeLedgerService) spentForCategory(category string) float64 {
 		}
 	}
 	return total
+}
+
+func slowLedgerService(delay time.Duration) ledger.Service {
+	type slow struct{ *fakeLedgerService }
+	return &struct{ *fakeLedgerService }{
+		&fakeLedgerService{budgets: map[string]ledger.Budget{"еда": {Category: "еда", Limit: 5000}}},
+	}
+}
+
+type slowLedger struct {
+	*fakeLedgerService
+	delay time.Duration
+}
+func (s *slowLedger) GetReportSummary(ctx context.Context, from, to string) ([]ledger.ReportSummary, error) {
+	timer := time.NewTimer(s.delay)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+	}
+	return s.fakeLedgerService.GetReportSummary(ctx, from, to)
+}
+
+func verySlowLedgerService(delay time.Duration) ledger.Service {
+	return &slowLedger{fakeLedgerService: newFakeLedgerService(), delay: delay}
+}
+
+func NewTestRouterWithTimeout(svc ledger.Service, timeout time.Duration) http.Handler {
+	h := handler{svc: svc}
+	testMux := http.NewServeMux()
+
+	testMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { h.handleGetReportSummary(w, r) })
+	return timeoutMiddleware(timeout, testMux)
 }
 
