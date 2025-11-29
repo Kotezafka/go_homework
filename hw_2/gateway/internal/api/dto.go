@@ -1,6 +1,7 @@
 package api
 
 import (
+	"ledger/shared"
 	"ledger"
 	"time"
 )
@@ -34,6 +35,18 @@ type BudgetResponse struct {
 	Limit      float64 `json:"limit"`
 	Remaining  float64 `json:"remaining"`
 	Period     string  `json:"period"`
+}
+
+// BulkImportResultDTO - результат batch-импорта для ответа Gateway
+type BulkImportResultDTO struct {
+	Accepted int                    `json:"accepted"`
+	Rejected int                    `json:"rejected"`
+	Errors   []BulkImportErrorDTO   `json:"errors"`
+}
+
+type BulkImportErrorDTO struct {
+	Index int    `json:"index"`
+	Error string `json:"error"`
 }
 
 // Преобразует DTO в доменную модель
@@ -75,4 +88,19 @@ func ToBudgetResponse(b ledger.Budget) BudgetResponse {
 		Remaining:  b.Remaining,
 		Period:     b.Period,
 	}
+}
+
+// Маппинг из domain к DTO для ответа в API
+func ToBulkImportResultDTO(r shared.BulkImportResult) BulkImportResultDTO {
+	dto := BulkImportResultDTO{
+		Accepted: r.Accepted,
+		Rejected: r.Rejected,
+	}
+	for _, e := range r.Errors {
+		dto.Errors = append(dto.Errors, BulkImportErrorDTO{
+			Index: e.Index,
+			Error: e.Error,
+		})
+	}
+	return dto
 }

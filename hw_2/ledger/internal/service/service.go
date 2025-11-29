@@ -12,6 +12,7 @@ import (
 
 	"ledger/internal/cache"
 	"ledger/internal/domain"
+	"ledger/shared"
 )
 
 const (
@@ -27,6 +28,7 @@ type Service interface {
 	AddTransaction(ctx context.Context, tx domain.Transaction) (domain.Transaction, error)
 	ListTransactions(ctx context.Context) ([]domain.Transaction, error)
 	GetReportSummary(ctx context.Context, from, to string) ([]domain.ReportSummary, error)
+	ImportTransactionsBulk(ctx context.Context, txs []domain.Transaction, workers int) (shared.BulkImportResult, error)
 }
 
 type ledgerService struct {
@@ -162,15 +164,15 @@ func (s *ledgerService) GetReportSummary(ctx context.Context, from, to string) (
 
 	wg.Add(len(categories))
 	for _, cat := range categories {
-		cat := cat // локальная копия
+		cat := cat
 		go func() {
 			defer wg.Done()
 			select {
 			case <-ctx.Done():
-				return // ранний выход по отмене
+				return
 			default:
 			}
-			// расчет суммы по категории (за период)
+			
 			var total float64
 			row := s.expensesDB().QueryRowContext(ctx, "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE category = $1 AND date >= $2 AND date <= $3", cat, from, to)
 			if err := row.Scan(&total); err != nil {
@@ -192,7 +194,7 @@ func (s *ledgerService) GetReportSummary(ctx context.Context, from, to string) (
 	if calcErr != nil {
 		return nil, calcErr
 	}
-	// преобразуем map в []ReportSummary/или map для отдачи в gateway (тут массив для совместимости)
+
 	summary := make([]domain.ReportSummary, 0, len(result))
 	for k, v := range result {
 		summary = append(summary, domain.ReportSummary{Category: k, Total: v})
@@ -332,5 +334,94 @@ func (s *ledgerService) expensesDB() *sql.DB {
 		return exp.DB()
 	}
 	return nil
+}
+
+
+type BulkImportResult struct {
+	Accepted int                `json:"accepted"`
+	Rejected int                `json:"rejected"`
+	Errors   []BulkImportError  `json:"errors"`
+}
+
+type BulkImportError struct {
+	Index int    `json:"index"`
+	Error string `json:"error"`
+}
+
+func (s *ledgerService) ImportTransactionsBulk(ctx context.Context, txs []domain.Transaction, workers int) (shared.BulkImportResult, error) {
+	type job struct {
+		Index int
+		Tx    domain.Transaction
+	}
+	type result struct {
+		Index int
+		Ok    bool
+		Err   error
+	}
+	var (
+		jobs    = make(chan job, len(txs))
+		results = make(chan result, len(txs))
+	)
+
+	for idx, tx := range txs {
+		jobs <- job{Index: idx, Tx: tx}
+	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+	workerCount := workers
+	if workerCount <= 0 {
+		workerCount = 4
+	}
+
+	wg.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				if err := j.Tx.Validate(); err != nil {
+					results <- result{Index: j.Index, Ok: false, Err: err}
+					continue
+				}
+				err := s.ensureBudgetLimit(ctx, j.Tx)
+				if err != nil {
+					results <- result{Index: j.Index, Ok: false, Err: err}
+					continue
+				}
+				_, err = s.expenses.Create(ctx, j.Tx)
+				if err != nil {
+					results <- result{Index: j.Index, Ok: false, Err: err}
+				} else {
+					results <- result{Index: j.Index, Ok: true, Err: nil}
+				}
+			}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var bulkResult shared.BulkImportResult
+	for r := range results {
+		if ctx.Err() != nil {
+			return bulkResult, ctx.Err()
+		}
+		if r.Ok {
+			bulkResult.Accepted++
+		} else {
+			bulkResult.Rejected++
+			if r.Err != nil {
+				bulkResult.Errors = append(bulkResult.Errors, shared.BulkImportError{Index: r.Index, Error: r.Err.Error()})
+			}
+		}
+	}
+
+	return bulkResult, ctx.Err()
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -26,6 +27,14 @@ func NewRouter(svc ledger.Service) http.Handler {
 		default:
 			errorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
+	})
+
+	apiMux.HandleFunc("/transactions/bulk", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			errorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		h.handleImportBulk(w, r)
 	})
 
 	apiMux.HandleFunc("/budgets", func(w http.ResponseWriter, r *http.Request) {
@@ -156,6 +165,38 @@ func (h handler) handleGetReportSummary(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, summary)
+}
+
+func (h handler) handleImportBulk(w http.ResponseWriter, r *http.Request) {
+	var reqs []CreateTransactionRequest
+	if err := json.NewDecoder(r.Body).Decode(&reqs); err != nil {
+		errorResponse(w, http.StatusBadRequest, "Invalid JSON format (array expected)")
+		return
+	}
+	if len(reqs) == 0 {
+		errorResponse(w, http.StatusBadRequest, "Empty payload")
+		return
+	}
+	txs := make([]ledger.Transaction, len(reqs))
+	for i, req := range reqs {
+		txs[i] = req.ToDomainTransaction()
+	}
+	workers := 4
+	if n := r.URL.Query().Get("workers"); n != "" {
+		if parsed, err := strconv.Atoi(n); err == nil && parsed > 0 && parsed <= 32 {
+			workers = parsed
+		}
+	}
+	result, err := h.svc.ImportTransactionsBulk(r.Context(), txs, workers)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			errorResponse(w, 504, "request timeout or cancelled")
+		} else {
+			errorResponse(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, ToBulkImportResultDTO(result))
 }
 
 func handlePing(w http.ResponseWriter, r *http.Request) {

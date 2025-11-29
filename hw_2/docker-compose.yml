@@ -67,10 +67,12 @@ services:
       - .:/app
     command: >
       sh -c '
+        set -e
         go mod tidy && \
         go install github.com/onsi/ginkgo/v2/ginkgo@latest || true && \
-        go test -v -cover ./ledger/... && \
-        go test -v -cover ./gateway/... && \
+        go test -v -race -cover ./ledger/... && \
+        go test -v -race -cover ./gateway/... && \
+        echo "ALL TESTS PASSED" && \
         echo "--- COVERAGE ---" && \
         # go test -coverprofile=cover.out ./... && \
         # go tool cover -func=cover.out && \
