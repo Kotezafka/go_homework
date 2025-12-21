@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package ledger;
+option go_package = "ledger/proto";
+
+service LedgerService {
+  rpc SetBudget(SetBudgetRequest) returns (SetBudgetResponse);
+  rpc ListBudgets(ListBudgetsRequest) returns (ListBudgetsResponse);
+  rpc AddTransaction(AddTransactionRequest) returns (AddTransactionResponse);
+  rpc ListTransactions(ListTransactionsRequest) returns (ListTransactionsResponse);
+  rpc GetReportSummary(GetReportSummaryRequest) returns (GetReportSummaryResponse);
+  rpc ImportTransactionsBulk(ImportTransactionsBulkRequest) returns (ImportTransactionsBulkResponse);
+  rpc ImportCSV(ImportCSVRequest) returns (ImportCSVResponse);
+  rpc ExportCSV(ExportCSVRequest) returns (ExportCSVResponse);
+}
+
+message Budget {
+  string category = 1;
+  double limit = 2;
+  double remaining = 3;
+  string period = 4;
+}
+
+message Transaction {
+  int32 id = 1;
+  double amount = 2;
+  string category = 3;
+  string description = 4;
+  string date = 5;
+}
+
+message ReportSummary {
+  string category = 1;
+  double total = 2;
+}
+
+message BulkImportResult {
+  int32 accepted = 1;
+  int32 rejected = 2;
+  repeated BulkImportError errors = 3;
+}
+
+message BulkImportError {
+  int32 index = 1;
+  string error = 2;
+}
+
+message SetBudgetRequest {
+  string user_id = 1;
+  Budget budget = 2;
+}
+
+message SetBudgetResponse {
+  Budget budget = 1;
+}
+
+message ListBudgetsRequest {
+  string user_id = 1;
+}
+
+message ListBudgetsResponse {
+  repeated Budget budgets = 1;
+}
+
+message AddTransactionRequest {
+  string user_id = 1;
+  Transaction transaction = 2;
+}
+
+message AddTransactionResponse {
+  Transaction transaction = 1;
+}
+
+message ListTransactionsRequest {
+  string user_id = 1;
+}
+
+message ListTransactionsResponse {
+  repeated Transaction transactions = 1;
+}
+
+message GetReportSummaryRequest {
+  string user_id = 1;
+  string from = 2;
+  string to = 3;
+}
+
+message GetReportSummaryResponse {
+  repeated ReportSummary summaries = 1;
+  double total_expenses = 2;
+  double total_budget = 3;
+  double budget_usage_percent = 4;
+}
+
+message ImportTransactionsBulkRequest {
+  string user_id = 1;
+  repeated Transaction transactions = 2;
+  int32 workers = 3;
+}
+
+message ImportTransactionsBulkResponse {
+  BulkImportResult result = 1;
+}
+
+message ImportCSVRequest {
+  string user_id = 1;
+  string csv_data = 2;
+}
+
+message ImportCSVResponse {
+  BulkImportResult result = 1;
+}
+
+message ExportCSVRequest {
+  string user_id = 1;
+  string from = 2;
+  string to = 3;
+}
+
+message ExportCSVResponse {
+  string csv_data = 1;
+}

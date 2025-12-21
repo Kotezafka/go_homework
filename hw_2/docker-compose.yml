@@ -9,7 +9,7 @@ services:
     ports:
       - "5434:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data2
       - ./docker-init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres_user -d postgres"]
@@ -32,20 +32,100 @@ services:
     networks:
       - cashapp-network
 
+  migrations:
+    image: golang:1.23-alpine
+    container_name: cashapp-migrations
+    volumes:
+      - ./auth/migrations:/auth-migrations
+      - ./ledger/migrations:/ledger-migrations
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "
+        apk add --no-cache postgresql-client > /dev/null 2>&1 &&
+        echo 'Установка goose...' &&
+        go install github.com/pressly/goose/v3/cmd/goose@latest &&
+        echo 'Ожидание готовности PostgreSQL...' &&
+        until PGPASSWORD=postgres_password psql -h db -U postgres_user -d postgres -c 'SELECT 1' > /dev/null 2>&1; do
+          echo 'Ожидание PostgreSQL...' &&
+          sleep 1
+        done &&
+        echo 'Создание базы cashapp если её нет...' &&
+        PGPASSWORD=postgres_password psql -h db -U postgres_user -d postgres -tc \"SELECT 1 FROM pg_database WHERE datname='cashapp'\" | grep -q 1 || 
+        PGPASSWORD=postgres_password psql -h db -U postgres_user -d postgres -c \"CREATE DATABASE cashapp;\" &&
+        echo 'Применение миграций Auth...' &&
+        /go/bin/goose -dir /auth-migrations postgres 'postgres://postgres_user:postgres_password@db:5432/postgres?sslmode=disable' up &&
+        echo 'Применение миграций Ledger...' &&
+        /go/bin/goose -dir /ledger-migrations postgres 'postgres://postgres_user:postgres_password@db:5432/cashapp?sslmode=disable' up &&
+        echo 'Миграции применены успешно!'
+      "
+    networks:
+      - cashapp-network
+    restart: "no"
+
+  auth:
+    build:
+      context: .
+      dockerfile: ./auth/Dockerfile
+    container_name: cashapp-auth
+    environment:
+      DATABASE_URL: "postgres://postgres_user:postgres_password@db:5432/postgres?sslmode=disable"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "50051"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - cashapp-network
+    restart: unless-stopped
+
+  ledger:
+    build:
+      context: .
+      dockerfile: ./ledger/Dockerfile
+    container_name: cashapp-ledger
+    environment:
+      DATABASE_URL: "postgres://postgres_user:postgres_password@db:5432/cashapp?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "50052"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - cashapp-network
+    restart: unless-stopped
+
   gateway:
     build:
       context: .
       dockerfile: ./gateway/Dockerfile
     container_name: cashapp-gateway
     environment:
-      DATABASE_URL: "postgres://postgres_user:postgres_password@db:5432/cashapp?sslmode=disable"
-      REDIS_ADDR: "redis:6379"
+      MOCK_MODE: "false"
+      LEDGER_ADDR: "ledger:50052"
+      AUTH_ADDR: "auth:50051"
     ports:
       - "8080:8080"
     depends_on:
-      db:
+      ledger:
         condition: service_healthy
-      redis:
+      auth:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/ping"]

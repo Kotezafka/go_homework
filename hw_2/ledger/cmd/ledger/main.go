@@ -2,33 +2,43 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"os"
+	"log"
+	"net"
 
-	"ledger"
+	"ledger/internal/app"
+	"ledger/internal/grpcjson"
+	"ledger/pkg/ledger"
+	"ledger/proto"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 func main() {
-	fmt.Println("Сервис учёта запущен")
-
 	ctx := context.Background()
-	svc, closeFn, err := ledger.New(ctx)
+
+	svc, closeFn, err := app.NewService(ctx)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка инициализации: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Failed to initialize service: %v", err)
 	}
 	defer func() {
 		if err := closeFn(); err != nil {
-			fmt.Fprintf(os.Stderr, "Ошибка при закрытии ресурсов: %v\n", err)
+			log.Printf("Error closing service: %v", err)
 		}
 	}()
 
-	// Демонстрация простого использования сервиса (можно заменить на gRPC позднее).
-	if _, err := svc.ListBudgets(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка при получении бюджетов: %v\n", err)
+	grpcServer := grpc.NewServer(grpc.ForceServerCodec(grpcjson.Codec{}))
+
+	ledgerServer := ledger.NewServer(svc)
+	proto.RegisterLedgerServiceServer(grpcServer, ledgerServer)
+	reflection.Register(grpcServer)
+
+	lis, err := net.Listen("tcp", ":50052")
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
 	}
 
-	fmt.Println("Ledger сервис готов к работе. Ожидание запросов от Gateway...")
-	select {}
+	log.Println("Ledger service started on :50052")
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Fatalf("Failed to serve: %v", err)
+	}
 }
-

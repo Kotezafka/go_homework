@@ -1,17 +1,22 @@
-FROM golang:1.23-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 RUN apk add --no-cache git
 
 WORKDIR /app
 
-COPY go.mod go.sum ./
+COPY go.work ./
+COPY ledger/go.mod ./ledger/
+COPY auth/go.mod ./auth/
+COPY gateway/go.mod ./gateway/
 
+WORKDIR /app/ledger
 RUN go mod download
 
-COPY . .
+WORKDIR /app
+COPY ledger/ ./ledger/
 
-WORKDIR /app/cmd/ledger
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o ledger main.go
+WORKDIR /app/ledger
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o ledger ./cmd/ledger
 
 FROM alpine:latest
 
@@ -19,6 +24,8 @@ RUN apk --no-cache add ca-certificates
 
 WORKDIR /app
 
-COPY --from=builder /app/cmd/ledger/ledger .
+COPY --from=builder /app/ledger/ledger .
+
+EXPOSE 50052
 
 CMD ["./ledger"]

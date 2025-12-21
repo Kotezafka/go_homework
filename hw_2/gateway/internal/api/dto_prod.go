@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// DTO для создания транзакции
+
 type CreateTransactionRequest struct {
 	Amount      float64 `json:"amount"`
 	Category    string  `json:"category"`
@@ -14,7 +14,6 @@ type CreateTransactionRequest struct {
 	Date        string  `json:"date"`
 }
 
-// DTO для ответа о транзакции
 type TransactionResponse struct {
 	ID          int     `json:"id"`
 	Amount      float64 `json:"amount"`
@@ -23,13 +22,11 @@ type TransactionResponse struct {
 	Date        string  `json:"date"`
 }
 
-// DTO для создания/обновления бюджета
 type CreateBudgetRequest struct {
 	Category string  `json:"category"`
 	Limit    float64 `json:"limit"`
 }
 
-// DTO для ответа о бюджете
 type BudgetResponse struct {
 	Category   string  `json:"category"`
 	Limit      float64 `json:"limit"`
@@ -37,7 +34,6 @@ type BudgetResponse struct {
 	Period     string  `json:"period"`
 }
 
-// BulkImportResultDTO - результат batch-импорта для ответа Gateway
 type BulkImportResultDTO struct {
 	Accepted int                    `json:"accepted"`
 	Rejected int                    `json:"rejected"`
@@ -49,7 +45,6 @@ type BulkImportErrorDTO struct {
 	Error string `json:"error"`
 }
 
-// Преобразует DTO в доменную модель
 func (req *CreateTransactionRequest) ToDomainTransaction() ledger.Transaction {
 	return ledger.Transaction{
 		Amount:      req.Amount,
@@ -59,7 +54,6 @@ func (req *CreateTransactionRequest) ToDomainTransaction() ledger.Transaction {
 	}
 }
 
-// Преобразует доменную модель в DTO
 func ToTransactionResponse(tx ledger.Transaction) TransactionResponse {
 	return TransactionResponse{
 		ID:          tx.ID,
@@ -70,7 +64,6 @@ func ToTransactionResponse(tx ledger.Transaction) TransactionResponse {
 	}
 }
 
-// Преобразует DTO в доменную модель
 func (req *CreateBudgetRequest) ToDomainBudget() ledger.Budget {
 	return ledger.Budget{
 		Category:  req.Category,
@@ -80,7 +73,6 @@ func (req *CreateBudgetRequest) ToDomainBudget() ledger.Budget {
 	}
 }
 
-// Преобразует доменную модель в DTO
 func ToBudgetResponse(b ledger.Budget) BudgetResponse {
 	return BudgetResponse{
 		Category:   b.Category,
@@ -90,7 +82,6 @@ func ToBudgetResponse(b ledger.Budget) BudgetResponse {
 	}
 }
 
-// Маппинг из domain к DTO для ответа в API
 func ToBulkImportResultDTO(r shared.BulkImportResult) BulkImportResultDTO {
 	dto := BulkImportResultDTO{
 		Accepted: r.Accepted,
