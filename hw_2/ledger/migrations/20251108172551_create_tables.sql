@@ -1,3 +1,5 @@
+-- +goose Up
+-- +goose StatementBegin
 CREATE TABLE budgets (
     id SERIAL PRIMARY KEY,
     user_id UUID NOT NULL,
@@ -15,11 +17,15 @@ CREATE TABLE expenses (
     date DATE NOT NULL
 );
 
+-- Индексы для производительности
 CREATE INDEX idx_expenses_user_category_date ON expenses(user_id, category, date);
 CREATE INDEX idx_expenses_user_date ON expenses(user_id, date DESC);
+-- +goose StatementEnd
 
+-- +goose Down
+-- +goose StatementBegin
 DROP INDEX IF EXISTS idx_expenses_user_category_date;
 DROP INDEX IF EXISTS idx_expenses_user_date;
 DROP TABLE IF EXISTS expenses;
 DROP TABLE IF EXISTS budgets;
-
+-- +goose StatementEnd

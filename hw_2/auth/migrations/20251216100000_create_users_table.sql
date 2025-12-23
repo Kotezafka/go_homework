@@ -1,3 +1,5 @@
+-- +goose Up
+-- +goose StatementBegin
 CREATE TABLE users (
     id UUID PRIMARY KEY,
     email TEXT UNIQUE NOT NULL,
@@ -8,6 +10,10 @@ CREATE TABLE users (
 );
 
 CREATE INDEX idx_users_email ON users(email);
+-- +goose StatementEnd
 
+-- +goose Down
+-- +goose StatementBegin
 DROP INDEX IF EXISTS idx_users_email;
 DROP TABLE IF EXISTS users;
+-- +goose StatementEnd
