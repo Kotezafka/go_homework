@@ -57,7 +57,7 @@ func NewRouter(svc ledger.Service) http.Handler {
 	})
 
 	rootMux := http.NewServeMux()
-	rootMux.Handle("/api/", timeoutMiddleware(2*time.Second, loggingMiddleware(http.StripPrefix("/api", apiMux))))
+	rootMux.Handle("/api/", userIDMiddleware(timeoutMiddleware(2*time.Second, loggingMiddleware(http.StripPrefix("/api", apiMux)))))
 	rootMux.HandleFunc("/ping", handlePing)
 
 	return rootMux
@@ -213,6 +213,24 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		fmt.Printf("[LOG] %s %s took %v\n", r.Method, r.URL.Path, time.Since(start))
+	})
+}
+
+// userIDMiddleware кладёт userId в context, чтобы Ledger мог делать user-scoped cache keys.
+// Источник: заголовок `X-User-ID` (или `X-User-Id`).
+func userIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userID := r.Header.Get("X-User-ID")
+		if userID == "" {
+			userID = r.Header.Get("X-User-Id")
+		}
+		if userID == "" {
+			errorResponse(w, http.StatusUnauthorized, "missing X-User-ID header")
+			return
+		}
+
+		r = r.WithContext(context.WithValue(r.Context(), "userId", userID))
+		next.ServeHTTP(w, r)
 	})
 }
 

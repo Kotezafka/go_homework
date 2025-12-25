@@ -19,12 +19,16 @@ func NewExpenseRepository(db *sql.DB) *ExpenseRepository {
 }
 
 func (r *ExpenseRepository) Create(ctx context.Context, tx domain.Transaction) (domain.Transaction, error) {
+	userID, err := userIDFromContext(ctx)
+	if err != nil {
+		return domain.Transaction{}, fmt.Errorf("pg: insert expense: %w", err)
+	}
 	const query = `
-INSERT INTO expenses(amount, category, description, date)
-VALUES ($1, $2, $3, $4)
+INSERT INTO expenses(user_id, amount, category, description, date)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING id`
 
-	if err := r.db.QueryRowContext(ctx, query, tx.Amount, tx.Category, tx.Description, tx.Date).Scan(&tx.ID); err != nil {
+	if err := r.db.QueryRowContext(ctx, query, userID, tx.Amount, tx.Category, tx.Description, tx.Date).Scan(&tx.ID); err != nil {
 		return domain.Transaction{}, fmt.Errorf("pg: insert expense: %w", err)
 	}
 
@@ -35,9 +39,15 @@ func (r *ExpenseRepository) List(ctx context.Context) ([]domain.Transaction, err
 	const query = `
 SELECT id, amount, category, description, date
 FROM expenses
+WHERE user_id = $1
 ORDER BY date DESC, id DESC`
 
-	rows, err := r.db.QueryContext(ctx, query)
+	userID, err := userIDFromContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("pg: list expenses: %w", err)
+	}
+
+	rows, err := r.db.QueryContext(ctx, query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("pg: list expenses: %w", err)
 	}
@@ -60,10 +70,15 @@ ORDER BY date DESC, id DESC`
 }
 
 func (r *ExpenseRepository) SumByCategory(ctx context.Context, category string) (float64, error) {
-	const query = `SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE category = $1`
+	userID, err := userIDFromContext(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("pg: sum expenses by category: %w", err)
+	}
+
+	const query = `SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE user_id = $1 AND category = $2`
 
 	var spent float64
-	if err := r.db.QueryRowContext(ctx, query, category).Scan(&spent); err != nil {
+	if err := r.db.QueryRowContext(ctx, query, userID, category).Scan(&spent); err != nil {
 		return 0, fmt.Errorf("pg: sum expenses by category: %w", err)
 	}
 
@@ -71,14 +86,19 @@ func (r *ExpenseRepository) SumByCategory(ctx context.Context, category string) 
 }
 
 func (r *ExpenseRepository) Summary(ctx context.Context, from, to string) ([]domain.ReportSummary, error) {
+	userID, err := userIDFromContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("pg: report summary: %w", err)
+	}
+
 	const query = `
 SELECT category, COALESCE(SUM(amount), 0) AS total
 FROM expenses
-WHERE date >= $1 AND date <= $2
+WHERE user_id = $1 AND date >= $2 AND date <= $3
 GROUP BY category
 ORDER BY category`
 
-	rows, err := r.db.QueryContext(ctx, query, from, to)
+	rows, err := r.db.QueryContext(ctx, query, userID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("pg: report summary: %w", err)
 	}

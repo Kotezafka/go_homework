@@ -24,6 +24,7 @@ func TestBudgetsAPI(t *testing.T) {
 
 		req := httptest.NewRequest(http.MethodPost, "/api/budgets", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res := httptest.NewRecorder()
 
 		router.ServeHTTP(res, req)
@@ -47,6 +48,7 @@ func TestBudgetsAPI(t *testing.T) {
 
 		req := httptest.NewRequest(http.MethodPost, "/api/budgets", bytes.NewBufferString("invalid json"))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res := httptest.NewRecorder()
 
 		router.ServeHTTP(res, req)
@@ -64,6 +66,7 @@ func TestBudgetsAPI(t *testing.T) {
 
 		req := httptest.NewRequest(http.MethodPost, "/api/budgets", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res := httptest.NewRecorder()
 
 		router.ServeHTTP(res, req)
@@ -81,9 +84,11 @@ func TestBudgetsAPI(t *testing.T) {
 		body, _ := json.Marshal(reqBody)
 		createReq := httptest.NewRequest(http.MethodPost, "/api/budgets", bytes.NewBuffer(body))
 		createReq.Header.Set("Content-Type", "application/json")
+		createReq.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		router.ServeHTTP(httptest.NewRecorder(), createReq)
 
 		req := httptest.NewRequest(http.MethodGet, "/api/budgets", nil)
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res := httptest.NewRecorder()
 		router.ServeHTTP(res, req)
 
@@ -118,6 +123,7 @@ func TestTransactionsAPI(t *testing.T) {
 		body, _ := json.Marshal(txReq)
 		req := httptest.NewRequest(http.MethodPost, "/api/transactions", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res := httptest.NewRecorder()
 		router.ServeHTTP(res, req)
 
@@ -126,6 +132,7 @@ func TestTransactionsAPI(t *testing.T) {
 		}
 
 		req = httptest.NewRequest(http.MethodGet, "/api/transactions", nil)
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res = httptest.NewRecorder()
 		router.ServeHTTP(res, req)
 
@@ -149,6 +156,7 @@ func TestTransactionsAPI(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/transactions",
 			bytes.NewBufferString(`{"amount":2500,"category":"еда","date":"2025-01-16"}`))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res := httptest.NewRecorder()
 		router.ServeHTTP(res, req)
 
@@ -161,6 +169,7 @@ func TestTransactionsAPI(t *testing.T) {
 		router := NewRouter(newFakeLedgerService())
 		req := httptest.NewRequest(http.MethodPost, "/api/transactions", bytes.NewBufferString("bad"))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res := httptest.NewRecorder()
 		router.ServeHTTP(res, req)
 
@@ -175,6 +184,7 @@ func TestTransactionsAPI(t *testing.T) {
 		body, _ := json.Marshal(reqBody)
 		req := httptest.NewRequest(http.MethodPost, "/api/transactions", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res := httptest.NewRecorder()
 		router.ServeHTTP(res, req)
 
@@ -194,6 +204,7 @@ func TestTransactionsAPI(t *testing.T) {
 		body, _ := json.Marshal(bulk)
 		req := httptest.NewRequest(http.MethodPost, "/api/transactions/bulk", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res := httptest.NewRecorder()
 		r.ServeHTTP(res, req)
 		if res.Code != http.StatusOK {
@@ -220,6 +231,7 @@ func TestTransactionsAPI(t *testing.T) {
 		body, _ := json.Marshal(bulk)
 		req := httptest.NewRequest(http.MethodPost, "/api/transactions/bulk", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res := httptest.NewRecorder()
 		r.ServeHTTP(res, req)
 		if res.Code != http.StatusOK {
@@ -242,6 +254,7 @@ func TestTransactionsAPI(t *testing.T) {
 		r := NewRouter(newFakeLedgerService())
 		req := httptest.NewRequest(http.MethodPost, "/api/transactions/bulk", bytes.NewBufferString("bad"))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res := httptest.NewRecorder()
 		r.ServeHTTP(res, req)
 		if res.Code != http.StatusBadRequest {
@@ -260,6 +273,7 @@ func TestReportSummaryAPI(t *testing.T) {
 		createTransaction(router, CreateTransactionRequest{Amount: 700, Category: "транспорт", Description: "поездка", Date: "2025-01-18"})
 
 		req := httptest.NewRequest(http.MethodGet, "/api/reports/summary?from=2025-01-10&to=2025-01-20", nil)
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res := httptest.NewRecorder()
 		router.ServeHTTP(res, req)
 
@@ -282,6 +296,7 @@ func TestReportSummaryAPI(t *testing.T) {
 	t.Run("ошибка параметров (нет from)", func(t *testing.T) {
 		router := NewRouter(newFakeLedgerService())
 		req := httptest.NewRequest(http.MethodGet, "/api/reports/summary?to=2025-01-10", nil)
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res := httptest.NewRecorder()
 		router.ServeHTTP(res, req)
 		if res.Code != http.StatusBadRequest {
@@ -295,6 +310,7 @@ func TestReportSummaryAPI(t *testing.T) {
 		createBudget(router, CreateBudgetRequest{Category: "еда", Limit: 5000})
 		createTransaction(router, CreateTransactionRequest{Amount: 1500, Category: "еда", Description: "Обед", Date: "2025-01-15"})
 		req := httptest.NewRequest(http.MethodGet, "/api/reports/summary?from=2025-01-10&to=2025-01-22", nil)
+		req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 		res := httptest.NewRecorder()
 		router.ServeHTTP(res, req)
 		if res.Code != 504 {
@@ -307,6 +323,7 @@ func createBudget(router http.Handler, payload CreateBudgetRequest) {
 	body, _ := json.Marshal(payload)
 	req := httptest.NewRequest(http.MethodPost, "/api/budgets", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 	router.ServeHTTP(httptest.NewRecorder(), req)
 }
 
@@ -314,6 +331,7 @@ func createTransaction(router http.Handler, payload CreateTransactionRequest) {
 	body, _ := json.Marshal(payload)
 	req := httptest.NewRequest(http.MethodPost, "/api/transactions", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000001")
 	router.ServeHTTP(httptest.NewRecorder(), req)
 }
 

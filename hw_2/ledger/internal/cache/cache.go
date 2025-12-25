@@ -10,7 +10,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Client описывает минимальные операции кеша, необходимые сервису.
 type Client interface {
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
@@ -23,7 +22,6 @@ type redisClient struct {
 	client *redis.Client
 }
 
-// New создаёт подключение к Redis и выполняет ping.
 func New(ctx context.Context) (Client, error) {
 	addr := getEnvOrDefault("REDIS_ADDR", "localhost:6379")
 	db, _ := strconv.Atoi(getEnvOrDefault("REDIS_DB", "0"))
@@ -46,7 +44,11 @@ func New(ctx context.Context) (Client, error) {
 }
 
 func (c *redisClient) Get(ctx context.Context, key string) (string, error) {
-	return c.client.Get(ctx, key).Result()
+	val, err := c.client.Get(ctx, key).Result()
+	if err != nil && err == redis.Nil {
+		return "", nil
+	}
+	return val, err
 }
 
 func (c *redisClient) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {

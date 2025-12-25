@@ -16,12 +16,12 @@ import (
 )
 
 const (
-	budgetsCacheKey   = "budgets:all"
+	budgetsCacheKeyPrefix = "budgets:all"
+	reportCacheKeyPrefix  = "report:summary"
 	defaultBudgetsTTL = 30 * time.Second
 	defaultReportTTL  = 30 * time.Second
 )
 
-// Service описывает бизнес-операции Ledger.
 type Service interface {
 	SetBudget(ctx context.Context, budget domain.Budget) (domain.Budget, error)
 	ListBudgets(ctx context.Context) ([]domain.Budget, error)
@@ -38,7 +38,6 @@ type ledgerService struct {
 	now      func() time.Time
 }
 
-// New создаёт реализацию сервиса.
 func New(
 	budgetRepo domain.BudgetRepository,
 	expenseRepo domain.ExpenseRepository,
@@ -69,12 +68,13 @@ func (s *ledgerService) SetBudget(ctx context.Context, budget domain.Budget) (do
 		return domain.Budget{}, fmt.Errorf("save budget: %w", err)
 	}
 
-	s.invalidateBudgetsCache(ctx)
+	s.invalidateBudgetsCache(ctx, userIDFromContext(ctx))
 	return budget, nil
 }
 
 func (s *ledgerService) ListBudgets(ctx context.Context) ([]domain.Budget, error) {
-	if budgets, ok, err := s.loadBudgetsFromCache(ctx); err == nil && ok {
+	userID := userIDFromContext(ctx)
+	if budgets, ok, err := s.loadBudgetsFromCache(ctx, userID); err == nil && ok {
 		return budgets, nil
 	}
 
@@ -97,7 +97,7 @@ func (s *ledgerService) ListBudgets(ctx context.Context) ([]domain.Budget, error
 		}
 	}
 
-	s.saveBudgetsToCache(ctx, budgets)
+	s.saveBudgetsToCache(ctx, userID, budgets)
 	return budgets, nil
 }
 
@@ -115,7 +115,7 @@ func (s *ledgerService) AddTransaction(ctx context.Context, tx domain.Transactio
 		return domain.Transaction{}, fmt.Errorf("create transaction: %w", err)
 	}
 
-	s.invalidateBudgetsCache(ctx)
+	s.invalidateBudgetsCache(ctx, userIDFromContext(ctx))
 	return created, nil
 }
 
@@ -133,7 +133,11 @@ func (s *ledgerService) GetReportSummary(ctx context.Context, from, to string) (
 		return nil, errors.New("from and to must be provided")
 	}
 
-	// Конкурентное вычисление отчёта по категориям за период
+	userID := userIDFromContext(ctx)
+	if summary, ok, err := s.loadReportFromCache(ctx, userID, from, to); err == nil && ok {
+		return summary, nil
+	}
+
 	categories, err := s.getCategoriesForPeriod(ctx, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("get categories: %w", err)
@@ -174,7 +178,14 @@ func (s *ledgerService) GetReportSummary(ctx context.Context, from, to string) (
 			}
 			
 			var total float64
-			row := s.expensesDB().QueryRowContext(ctx, "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE category = $1 AND date >= $2 AND date <= $3", cat, from, to)
+			row := s.expensesDB().QueryRowContext(
+				ctx,
+				"SELECT COALESCE(SUM(amount),0) FROM expenses WHERE user_id = $1 AND category = $2 AND date >= $3 AND date <= $4",
+				userID,
+				cat,
+				from,
+				to,
+			)
 			if err := row.Scan(&total); err != nil {
 				errOnce.Do(func() { calcErr = fmt.Errorf("scan sum for %s: %w", cat, err) })
 				return
@@ -199,6 +210,8 @@ func (s *ledgerService) GetReportSummary(ctx context.Context, from, to string) (
 	for k, v := range result {
 		summary = append(summary, domain.ReportSummary{Category: k, Total: v})
 	}
+
+	s.saveReportToCache(ctx, userID, from, to, summary)
 	return summary, nil
 }
 
@@ -227,19 +240,21 @@ func (s *ledgerService) currentPeriod() string {
 	return s.now().Format("2006-01")
 }
 
-func (s *ledgerService) invalidateBudgetsCache(ctx context.Context) {
+func (s *ledgerService) invalidateBudgetsCache(ctx context.Context, userID string) {
 	if s.cache == nil {
 		return
 	}
-	_ = s.cache.Delete(ctx, budgetsCacheKey)
+	if err := s.cache.Delete(ctx, budgetsCacheKey(userID)); err != nil {
+		log.Printf("[cache] delete budgets key failed (userId=%q): %v", userID, err)
+	}
 }
 
-func (s *ledgerService) loadBudgetsFromCache(ctx context.Context) ([]domain.Budget, bool, error) {
+func (s *ledgerService) loadBudgetsFromCache(ctx context.Context, userID string) ([]domain.Budget, bool, error) {
 	if s.cache == nil {
 		return nil, false, nil
 	}
 
-	data, err := s.cache.Get(ctx, budgetsCacheKey)
+	data, err := s.cache.Get(ctx, budgetsCacheKey(userID))
 	if err != nil || data == "" {
 		return nil, false, err
 	}
@@ -251,25 +266,28 @@ func (s *ledgerService) loadBudgetsFromCache(ctx context.Context) ([]domain.Budg
 	return budgets, true, nil
 }
 
-func (s *ledgerService) saveBudgetsToCache(ctx context.Context, budgets []domain.Budget) {
+func (s *ledgerService) saveBudgetsToCache(ctx context.Context, userID string, budgets []domain.Budget) {
 	if s.cache == nil {
 		return
 	}
 
 	data, err := json.Marshal(budgets)
 	if err != nil {
+		log.Printf("[cache] marshal budgets failed (userId=%q): %v", userID, err)
 		return
 	}
 
-	_ = s.cache.Set(ctx, budgetsCacheKey, data, defaultBudgetsTTL)
+	if err := s.cache.Set(ctx, budgetsCacheKey(userID), data, defaultBudgetsTTL); err != nil {
+		log.Printf("[cache] set budgets failed (userId=%q): %v", userID, err)
+	}
 }
 
-func (s *ledgerService) loadReportFromCache(ctx context.Context, from, to string) ([]domain.ReportSummary, bool, error) {
+func (s *ledgerService) loadReportFromCache(ctx context.Context, userID, from, to string) ([]domain.ReportSummary, bool, error) {
 	if s.cache == nil {
 		return nil, false, nil
 	}
 
-	cacheKey := reportCacheKey(from, to)
+	cacheKey := reportCacheKey(userID, from, to)
 	data, err := s.cache.Get(ctx, cacheKey)
 	if err != nil || data == "" {
 		return nil, false, err
@@ -283,21 +301,49 @@ func (s *ledgerService) loadReportFromCache(ctx context.Context, from, to string
 	return summary, true, nil
 }
 
-func (s *ledgerService) saveReportToCache(ctx context.Context, from, to string, summary []domain.ReportSummary) {
+func (s *ledgerService) saveReportToCache(ctx context.Context, userID, from, to string, summary []domain.ReportSummary) {
 	if s.cache == nil {
 		return
 	}
 
 	data, err := json.Marshal(summary)
 	if err != nil {
+		log.Printf("[cache] marshal report summary failed (userId=%q from=%s to=%s): %v", userID, from, to, err)
 		return
 	}
 
-	_ = s.cache.Set(ctx, reportCacheKey(from, to), data, defaultReportTTL)
+	if err := s.cache.Set(ctx, reportCacheKey(userID, from, to), data, defaultReportTTL); err != nil {
+		log.Printf("[cache] set report summary failed (userId=%q from=%s to=%s): %v", userID, from, to, err)
+	}
 }
 
-func reportCacheKey(from, to string) string {
-	return fmt.Sprintf("report:summary:%s:%s", from, to)
+func budgetsCacheKey(userID string) string {
+	if userID == "" {
+		userID = "unknown"
+	}
+	return fmt.Sprintf("%s:%s", budgetsCacheKeyPrefix, userID)
+}
+
+func reportCacheKey(userID, from, to string) string {
+	if userID == "" {
+		userID = "unknown"
+	}
+	return fmt.Sprintf("%s:%s:%s:%s", reportCacheKeyPrefix, userID, from, to)
+}
+
+func userIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+
+	for _, k := range []any{"userID", "userId", "user_id"} {
+		if v := ctx.Value(k); v != nil {
+			if s, ok := v.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 
@@ -309,8 +355,9 @@ func (s *ledgerService) getCategoriesForPeriod(ctx context.Context, from, to str
 		cats[b.Category] = struct{}{}
 	}
 
-	const q = "SELECT DISTINCT category FROM expenses WHERE date >= $1 AND date <= $2"
-	rows, err := s.expensesDB().QueryContext(ctx, q, from, to)
+	userID := userIDFromContext(ctx)
+	const q = "SELECT DISTINCT category FROM expenses WHERE user_id = $1 AND date >= $2 AND date <= $3"
+	rows, err := s.expensesDB().QueryContext(ctx, q, userID, from, to)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
