@@ -133,7 +133,7 @@ if wget -q --spider http://localhost:8080/ping 2>/dev/null || curl -s http://loc
         fi
     fi
 else
-    echo -e "${YELLOW}⚠${NC} API недоступен (приложение ещё не запущено - это нормально при старте)"
+    echo -e "${YELLOW}${NC} API недоступен"
     echo "   Проверка API будет доступна после запуска приложения"
 fi
 echo ""

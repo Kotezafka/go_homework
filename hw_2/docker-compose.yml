@@ -17,7 +17,9 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - cashapp-network
+      cashapp-network:
+        aliases:
+          - postgres
 
   redis:
     image: redis:7-alpine
@@ -35,11 +37,13 @@ services:
   gateway:
     build:
       context: .
-      dockerfile: ./gateway/Dockerfile
+      dockerfile: ./Dockerfile
     container_name: cashapp-gateway
     environment:
-      DATABASE_URL: "postgres://postgres_user:postgres_password@db:5432/cashapp?sslmode=disable"
+      DATABASE_URL: "postgres://postgres_user:postgres_password@postgres:5432/cashapp?sslmode=disable"
       REDIS_ADDR: "redis:6379"
+      CHECK_ENABLED: "true"
+      CHECK_REQUIRED: "true"
     ports:
       - "8080:8080"
     depends_on:
